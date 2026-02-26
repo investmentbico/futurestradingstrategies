@@ -1,0 +1,147 @@
+//@version=5
+strategy("Conservative Trend-Momentum ATR Strategy (Risk % sizing)", 
+     overlay=true, 
+     calc_on_every_tick=true,
+     pyramiding=0,
+     default_qty_type=strategy.fixed,
+     default_qty_value=0)
+
+// ---------------- INPUTS ----------------
+fastEMA       = input.int(21, "Fast EMA", minval=1)
+slowEMA       = input.int(50, "Slow EMA", minval=1)
+rsiLen        = input.int(14, "RSI Length")
+rsiLongThresh = input.int(60, "RSI threshold for longs", minval=10, maxval=90)
+rsiShortThresh= input.int(40, "RSI threshold for shorts", minval=10, maxval=90)
+
+atrLen        = input.int(14, "ATR Length")
+atrMultSL     = input.float(2.0, "ATR Multiplier for SL", step=0.1)
+takeProfitRR  = input.float(2.0, "Take Profit (R:R)", step=0.1)
+useTP         = input.bool(true, "Use TP (enable/disable)")
+useTrailing   = input.bool(true, "Use ATR trailing stop")
+trailATRmult  = input.float(1.0, "Trailing ATR Mult", step=0.1)
+breakevenAfterProfit = input.float(100.0, "Move SL to breakeven after $ profit", step=1)
+
+riskPercent   = input.float(0.6, "Risk % per trade", step=0.1) // optimized for higher returns
+minEquityForTrade = input.float(100.0, "Min equity to allow trade $", step=1)
+
+// entry filters
+minBarRangePct = input.float(0.0, "Min bar range (%) to allow entry (0=off)", step=0.1)
+timeFilterEnable = input.bool(false, "Enable Time Filter (trade hours)")
+startHour = input.int(7, "Start Hour (UTC)", minval=0, maxval=23)
+endHour   = input.int(20, "End Hour (UTC)", minval=0, maxval=23)
+
+// plotting options
+showEntries = input.bool(true, "Show Entry/Exit labels")
+
+// ---------------- CALCULATIONS ----------------
+emaFast = ta.ema(close, fastEMA)
+emaSlow = ta.ema(close, slowEMA)
+rsiVal = ta.rsi(close, rsiLen)
+atrVal = ta.atr(atrLen)
+momentum = close > close[5]
+
+// basic trend/momentum conditions
+isBull = emaFast > emaSlow
+isBear = emaFast < emaSlow
+
+// optional min bar range filter
+barRangePct = (high - low) / low * 100.0
+allowBarRange = minBarRangePct <= 0 ? true : (barRangePct >= minBarRangePct)
+
+// optional time filter
+inTimeWindow = not timeFilterEnable ? true : (hour >= startHour and hour < endHour)
+
+// entry triggers
+longSignal  = isBull and rsiVal > rsiLongThresh and allowBarRange and inTimeWindow and momentum
+shortSignal = isBear and rsiVal < rsiShortThresh and allowBarRange and inTimeWindow and not momentum
+
+// ---------------- POSITION SIZING & SL/TP ----------------
+// compute SL distance (in price points) using ATR
+slDist = atrVal * atrMultSL
+if slDist <= syminfo.mintick
+    slDist := syminfo.mintick
+
+// compute number of contracts/units to risk riskPercent of equity
+get_qty(price, sl_distance) =>
+    // risk dollars we want per trade
+    risk_dollars = strategy.equity * (riskPercent / 100.0)
+    // per-unit risk in account currency: sl_distance * pointvalue
+    per_unit_risk = sl_distance * syminfo.pointvalue
+    // avoid division by zero
+    qty = per_unit_risk <= 0 ? 0 : math.floor(risk_dollars / per_unit_risk)
+    qty := qty < 1 ? 0 : qty
+    qty
+
+// calculate qty for current price
+qty = get_qty(close, slDist)
+
+// build exit prices
+long_stop_price  = close - slDist
+short_stop_price = close + slDist
+long_tp_price    = useTP ? close + slDist * takeProfitRR : na
+short_tp_price   = useTP ? close - slDist * takeProfitRR : na
+
+// ---------------- ENTRIES ----------------
+canTrade = (strategy.equity >= minEquityForTrade) and (qty > 0)
+
+if (longSignal and strategy.position_size == 0 and canTrade)
+    // place entry
+    strategy.entry("Long", strategy.long, qty=qty)
+    // place exit with SL and TP (one or both)
+    if useTP
+        strategy.exit("Exit Long", from_entry="Long", stop=long_stop_price, limit=long_tp_price)
+    else
+        strategy.exit("Exit Long", from_entry="Long", stop=long_stop_price)
+    if showEntries
+        label.new(bar_index, low, "ENTER LONG\nqty="+str.tostring(qty), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, yloc=yloc.belowbar)
+
+if (shortSignal and strategy.position_size == 0 and canTrade)
+    strategy.entry("Short", strategy.short, qty=qty)
+    if useTP
+        strategy.exit("Exit Short", from_entry="Short", stop=short_stop_price, limit=short_tp_price)
+    else
+        strategy.exit("Exit Short", from_entry="Short", stop=short_stop_price)
+    if showEntries
+        label.new(bar_index, high, "ENTER SHORT\nqty="+str.tostring(qty), style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, yloc=yloc.abovebar)
+
+// ---------------- TRAILING & BREAKEVEN ----------------
+var float trail_stop = na
+if (useTrailing)
+    if (strategy.position_size > 0)
+        // long trailing
+        currTrail = close - trailATRmult * atrVal
+        trail_stop := na(trail_stop) ? currTrail : math.max(trail_stop, currTrail)
+        strategy.exit("Trail Long", from_entry="Long", stop=trail_stop)
+        // breakeven move
+        if ( (close - strategy.position_avg_price) * strategy.position_size * syminfo.pointvalue >= breakevenAfterProfit )
+            strategy.exit("BE Long", from_entry="Long", stop=strategy.position_avg_price)
+    else
+        trail_stop := na
+
+    if (strategy.position_size < 0)
+        currTrailS = close + trailATRmult * atrVal
+        trail_stop := na(trail_stop) ? currTrailS : math.min(trail_stop, currTrailS)
+        strategy.exit("Trail Short", from_entry="Short", stop=trail_stop)
+        if ( (strategy.position_avg_price - close) * math.abs(strategy.position_size) * syminfo.pointvalue >= breakevenAfterProfit )
+            strategy.exit("BE Short", from_entry="Short", stop=strategy.position_avg_price)
+    else
+        trail_stop := na
+
+// reset trail_stop when flat
+if (strategy.position_size == 0)
+    trail_stop := na
+
+// ---------------- PLOTTING ----------------
+plot(emaFast, title="EMA Fast", color=color.orange)
+plot(emaSlow, title="EMA Slow", color=color.blue)
+hline(rsiLongThresh, "RSI Long Threshold", color=color.green, linestyle=hline.style_dashed)
+hline(rsiShortThresh, "RSI Short Threshold", color=color.red, linestyle=hline.style_dashed)
+plotshape(longSignal and showEntries ? 1 : na, title="LongSignal", location=location.belowbar, style=shape.triangleup, size=size.small, color=color.green)
+plotshape(shortSignal and showEntries ? 1 : na, title="ShortSignal", location=location.abovebar, style=shape.triangledown, size=size.small, color=color.red)
+
+// ---------------- INFO LABEL ----------------
+var infoLabel = label.new(bar_index, na, "")
+if barstate.islast
+    label.set_xy(infoLabel, bar_index, high)
+    label.set_text(infoLabel, "Risk%: " + str.tostring(riskPercent) + "%  SL ATRx: " + str.tostring(atrMultSL) + "  qty: " + str.tostring(qty))
+    label.set_style(infoLabel, label.style_label_right)
