@@ -262,55 +262,23 @@ class RiskManager:
 # =============================================================================
 # MAIN BACKTEST / LIVE TRADING
 # =============================================================================
-def main():
-    parser = argparse.ArgumentParser(description='NQ Futures Trading Strategy')
-    parser.add_argument('--live', action='store_true', help='Run in live trading mode')
-    parser.add_argument('--demo', action='store_true', help='Use demo account (default: True)')
-    parser.add_argument('--no-demo', action='store_true', help='Use live account')
-    parser.add_argument('--symbol', default='MNQ', help='Futures symbol to trade (default: MNQ)')
-    parser.add_argument('--max-trades', type=int, default=0, help='Maximum trades to take in live mode (0 = unlimited)')
+def run_backtest():
+    """Run the backtest simulation"""
+    print("Loading data...")
+    if not os.path.exists(PARAMS["DATA_FILE"]):
+        print(f"ERROR: Data file '{PARAMS["DATA_FILE"]}' not found!")
+        print("Please place the CSV file in the same folder as this script.")
+        return
 
-    args = parser.parse_args()
+    df = pd.read_csv(PARAMS["DATA_FILE"])
+    df = df[pd.to_numeric(df['time'], errors='coerce').notna()]
+    df['timestamp'] = pd.DatetimeIndex(pd.to_datetime(df['time'], unit='s')).tz_localize('UTC').tz_convert('US/Eastern')
+    df = df[['timestamp', 'open', 'high', 'low', 'close']].dropna().sort_values('timestamp').reset_index(drop=True)
 
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('trading.log'),
-            logging.StreamHandler()
-        ]
-    )
-    logger = logging.getLogger(__name__)
+    print(f"Data loaded: {len(df)} bars from {df['timestamp'].min()} to {df['timestamp'].max()}")
 
-    if args.live:
-        if not WebullAPI or not FuturesTrader:
-            logger.error("Webull API not available. Please ensure webull_api.py is present.")
-            return
-
-        # Live trading mode
-        is_demo = args.demo or not args.no_demo  # Default to demo
-        logger.info(f"Starting LIVE TRADING mode (Demo: {is_demo})")
-
-        try:
-            api = WebullAPI(is_demo=is_demo)
-            trader = FuturesTrader(api, args.symbol)
-
-            # Get account info
-            balance = trader.get_account_balance()
-            logger.info(f"Account Balance: ${balance:,.2f}")
-
-            # Run live trading loop
-            run_live_trading(trader, args.max_trades)
-
-        except Exception as e:
-            logger.error(f"Live trading failed: {e}")
-            return
-
-    else:
-        # Backtest mode
-        logger.info("Starting BACKTEST mode")
-        run_backtest()
+    # Precompute indicators
+    c = df['close'].values
     h = df['high'].values
     l = df['low'].values
     ema_f = calc_ema(c, PARAMS["EMA_FAST"])
@@ -318,6 +286,7 @@ def main():
     atr = calc_atr(h, l, c, PARAMS["ATR_LEN"])
     k_sm, d_sm = calc_stoch(h, l, c, PARAMS["STOCH_K"], PARAMS["STOCH_D"], PARAMS["STOCH_SMT"])
 
+    # Initialize
     position = Position()
     risk = RiskManager()
     trades = []
@@ -350,34 +319,18 @@ def main():
         if not sig or not sig.get("atr_valid"):
             continue
 
-        # Update trail on bar
+        # Update trailing stops
         if position.active:
             position.update_trail(high, low)
-            position.check_breakeven(close)
 
-        # Check exits
+        # Check for exits
         if position.active:
             eff_sl = position.effective_sl()
-            if position.direction == "long":
-                if low <= eff_sl:
-                    exit_price = eff_sl
-                    reason = "SL"
-                elif high >= position.tp_price:
-                    exit_price = position.tp_price
-                    reason = "TP"
-                else:
-                    exit_price = None
-            elif position.direction == "short":
-                if high >= eff_sl:
-                    exit_price = eff_sl
-                    reason = "SL"
-                elif low <= position.tp_price:
-                    exit_price = position.tp_price
-                    reason = "TP"
-                else:
-                    exit_price = None
+            pnl = position.current_pnl_dollars(close)
 
-            if exit_price:
+            # Stop loss
+            if (position.direction == "long" and low <= eff_sl) or (position.direction == "short" and high >= eff_sl):
+                exit_price = eff_sl
                 pnl = position.current_pnl_dollars(exit_price)
                 risk.record_trade(pnl)
                 equity += pnl
@@ -389,7 +342,25 @@ def main():
                     'entry_price': position.entry_price,
                     'exit_price': exit_price,
                     'pnl': pnl,
-                    'reason': reason
+                    'reason': 'stop_loss'
+                })
+                position.reset()
+
+            # Take profit
+            elif (position.direction == "long" and high >= position.tp_price) or (position.direction == "short" and low <= position.tp_price):
+                exit_price = position.tp_price
+                pnl = position.current_pnl_dollars(exit_price)
+                risk.record_trade(pnl)
+                equity += pnl
+                equity_curve.append(equity)
+                trades.append({
+                    'entry_time': position.entry_time,
+                    'exit_time': ts,
+                    'direction': position.direction,
+                    'entry_price': position.entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl,
+                    'reason': 'take_profit'
                 })
                 position.reset()
 
@@ -398,132 +369,6 @@ def main():
             sl_dist = risk.calc_sl_distance(sig["atr"])
             tp_dist = sl_dist * PARAMS["TP_RR"]
             trail = sig["atr"] * PARAMS["TRAIL_ATR_MULT"]
-            price = sig["close"]
-
-            if sig["uptrend"] and sig["stoch_d"] < PARAMS["STOCH_LO"] and sig["d_rising"]:
-                sl = price - sl_dist
-                tp = price + tp_dist
-                position.open_long(price, sl, tp, trail, PARAMS["CONTRACTS"])
-
-            elif sig["downtrend"] and sig["stoch_d"] > PARAMS["STOCH_HI"] and sig["d_falling"]:
-                sl = price + sl_dist
-                tp = price - tp_dist
-                position.open_short(price, sl, tp, trail, PARAMS["CONTRACTS"])
-
-def run_backtest():
-    """Run the backtest simulation"""
-    print("Loading data...")
-    if not os.path.exists(PARAMS["DATA_FILE"]):
-        print(f"ERROR: Data file '{PARAMS["DATA_FILE"]}' not found!")
-        print("Please place the CSV file in the same folder as this script.")
-        return
-
-    df = pd.read_csv(PARAMS["DATA_FILE"])
-    df = df[pd.to_numeric(df['time'], errors='coerce').notna()]
-    df['timestamp'] = pd.DatetimeIndex(pd.to_datetime(df['time'], unit='s')).tz_localize('UTC').tz_convert('US/Eastern')
-    df = df[['timestamp', 'open', 'high', 'low', 'close']].dropna().sort_values('timestamp').reset_index(drop=True)
-
-    print(f"Data loaded: {len(df)} bars from {df['timestamp'].min()} to {df['timestamp'].max()}")
-
-    # Precompute indicators
-    c = df['close'].values
-    h = df['high'].values
-    l = df['low'].values
-    ema_f = calc_ema(c, PARAMS["EMA_FAST"])
-    ema_s = calc_ema(c, PARAMS["EMA_SLOW"])
-    atr = calc_atr(h, l, c, PARAMS["ATR_LEN"])
-    k_sm, d_sm = calc_stoch(h, l, c, PARAMS["STOCH_K"], PARAMS["STOCH_D"], PARAMS["STOCH_SMT"])
-
-    # Initialize
-    position = Position()
-    risk_mgr = RiskManager()
-    trades = []
-    equity_curve = [300000.0]  # Starting capital
-    equity = equity_curve[0]
-
-    # Main loop
-    for idx in range(len(df)):
-        ts = df.loc[idx, 'timestamp']
-        close = c[idx]
-        high = h[idx]
-        low = l[idx]
-
-        # Check if we can trade today
-        if not risk_mgr.can_trade(ts):
-            continue
-
-        # Only trade in session
-        if not in_session(ts):
-            continue
-
-        # Update trailing stops
-        if position.active:
-            position.update_trail(high, low)
-
-        # Check for exits
-        if position.active:
-            eff_sl = position.effective_sl()
-            pnl_dollars = position.current_pnl_dollars(close)
-
-            # Stop loss
-            if (position.direction == "long" and low <= eff_sl) or (position.direction == "short" and high >= eff_sl):
-                exit_price = eff_sl
-                pnl_dollars = position.current_pnl_dollars(exit_price)
-                risk_mgr.record_trade(pnl_dollars)
-                equity += pnl_dollars
-                equity_curve.append(equity)
-
-                trade = {
-                    'entry_time': position.entry_time,
-                    'exit_time': ts,
-                    'direction': position.direction,
-                    'entry_price': position.entry_price,
-                    'exit_price': exit_price,
-                    'contracts': position.contracts,
-                    'pnl': pnl_dollars,
-                    'reason': 'stop_loss'
-                }
-                trades.append(trade)
-                position.reset()
-
-            # Take profit
-            elif (position.direction == "long" and high >= position.tp_price) or (position.direction == "short" and low <= position.tp_price):
-                exit_price = position.tp_price
-                pnl_dollars = position.current_pnl_dollars(exit_price)
-                risk_mgr.record_trade(pnl_dollars)
-                equity += pnl_dollars
-                equity_curve.append(equity)
-
-                trade = {
-                    'entry_time': position.entry_time,
-                    'exit_time': ts,
-                    'direction': position.direction,
-                    'entry_price': position.entry_price,
-                    'exit_price': exit_price,
-                    'contracts': position.contracts,
-                    'pnl': pnl_dollars,
-                    'reason': 'take_profit'
-                }
-                trades.append(trade)
-                position.reset()
-
-            # Breakeven check
-            elif position.check_breakeven(close):
-                print(f"Breakeven set at {position.entry_price}")
-
-        # Check for entries (only if no position)
-        if not position.active and idx >= max(PARAMS["EMA_SLOW"], PARAMS["STOCH_K"] + PARAMS["STOCH_D"], PARAMS["ATR_LEN"]):
-            # Get signals
-            bars = df.iloc[max(0, idx-100):idx+1].copy()
-            sig = compute_signals(bars)
-
-            if not sig["atr_valid"]:
-                continue
-
-            sl_dist = risk_mgr.calc_sl_distance(sig["atr"])
-            tp_dist = sl_dist * PARAMS["TP_RR"]
-            trail = sig["atr"] * PARAMS["TRAIL_ATR_MULT"]
-
             price = sig["close"]
 
             if sig["uptrend"] and sig["stoch_d"] < PARAMS["STOCH_LO"] and sig["d_rising"]:
@@ -597,260 +442,55 @@ def run_backtest():
     plt.savefig('backtest_results_NQ.png', dpi=150, bbox_inches='tight')
     print("Chart saved as: backtest_results_NQ.png")
 
-def run_live_trading(trader, max_trades: int = 0):
-    """
-    Run live trading with real-time data from Webull
+def main():
+    parser = argparse.ArgumentParser(description='NQ Futures Trading Strategy')
+    parser.add_argument('--live', action='store_true', help='Run in live trading mode')
+    parser.add_argument('--demo', action='store_true', help='Use demo account (default: True)')
+    parser.add_argument('--no-demo', action='store_true', help='Use live account')
+    parser.add_argument('--symbol', default='MNQ', help='Futures symbol to trade (default: MNQ)')
+    parser.add_argument('--max-trades', type=int, default=0, help='Maximum trades to take in live mode (0 = unlimited)')
 
-    Args:
-        trader: FuturesTrader instance
-        max_trades: Maximum number of trades to take (0 = unlimited)
-    """
+    args = parser.parse_args()
+
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('trading.log'),
+            logging.StreamHandler()
+        ]
+    )
     logger = logging.getLogger(__name__)
 
-    logger.info("Starting live trading session...")
-    logger.info(f"Symbol: {trader.symbol}")
-    logger.info(f"Max trades: {max_trades if max_trades > 0 else 'unlimited'}")
+    if args.live:
+        if not WebullAPI or not FuturesTrader:
+            logger.error("Webull API not available. Please ensure webull_api.py is present.")
+            return
 
-    # Initialize trading state
-    position = Position()
-    risk_mgr = RiskManager()
-    trades_taken = 0
-    last_bar_time = None
+        # Live trading mode
+        is_demo = args.demo or not args.no_demo  # Default to demo
+        logger.info(f"Starting LIVE TRADING mode (Demo: {is_demo})")
 
-    # Trading loop
-    while True:
         try:
-            # Check if we've reached max trades
-            if max_trades > 0 and trades_taken >= max_trades:
-                logger.info(f"Reached maximum trades limit ({max_trades})")
-                break
+            api = WebullAPI(is_demo=is_demo)
+            trader = FuturesTrader(api, args.symbol)
 
-            # Get current time
-            now = datetime.now(pytz.timezone('US/Eastern'))
+            # Get account info
+            balance = trader.get_account_balance()
+            logger.info(f"Account Balance: ${balance:,.2f}")
 
-            # Only trade during session
-            if not in_session(now):
-                logger.debug("Outside trading session")
-                time.sleep(60)  # Wait 1 minute
-                continue
+            # Run live trading loop
+            run_live_trading(trader, args.max_trades)
 
-            # Get current market data
-            try:
-                current_price = trader.get_current_price()
-                if current_price <= 0:
-                    logger.warning("Invalid price received, skipping...")
-                    time.sleep(5)
-                    continue
-            except Exception as e:
-                logger.error(f"Failed to get market data: {e}")
-                time.sleep(10)
-                continue
-
-            # Get recent historical data for indicators (last 100 bars)
-            try:
-                # Get 1-minute bars for the last hour
-                end_time = int(time.time())
-                start_time = end_time - 3600  # 1 hour ago
-
-                bars_data = trader.api.get_historical_data(
-                    trader.symbol,
-                    interval='1m',
-                    start_time=start_time,
-                    end_time=end_time,
-                    limit=100
-                )
-
-                if not bars_data:
-                    logger.warning("No historical data received")
-                    time.sleep(30)
-                    continue
-
-                # Convert to DataFrame
-                bars_df = pd.DataFrame(bars_data)
-                bars_df['timestamp'] = pd.to_datetime(bars_df['timestamp'], unit='ms')
-                bars_df = bars_df.sort_values('timestamp')
-
-                # Skip if we already processed this bar
-                current_bar_time = bars_df['timestamp'].iloc[-1] if not bars_df.empty else None
-                if current_bar_time == last_bar_time:
-                    time.sleep(10)  # Wait for new bar
-                    continue
-                last_bar_time = current_bar_time
-
-            except Exception as e:
-                logger.error(f"Failed to get historical data: {e}")
-                time.sleep(30)
-                continue
-
-            # Compute signals
-            try:
-                signals = compute_signals(bars_df)
-                if not signals["atr_valid"]:
-                    logger.debug("ATR not valid yet")
-                    time.sleep(30)
-                    continue
-            except Exception as e:
-                logger.error(f"Failed to compute signals: {e}")
-                time.sleep(30)
-                continue
-
-            # Check current position from API
-            api_position = trader.get_position()
-            if api_position and not position.active:
-                # We have a position that wasn't tracked locally
-                logger.info(f"Found existing position: {api_position}")
-                # TODO: Sync position state
-
-            # Update trailing stops if we have a position
-            if position.active:
-                # For live trading, we need to check against current price
-                # This is simplified - in production you'd want more sophisticated position management
-                pass
-
-            # Check for exits (simplified for live trading)
-            if position.active:
-                # Check stop loss and take profit levels
-                eff_sl = position.effective_sl()
-
-                exit_triggered = False
-                exit_reason = ""
-                exit_price = current_price
-
-                if position.direction == "long":
-                    if current_price <= eff_sl:
-                        exit_triggered = True
-                        exit_reason = "stop_loss"
-                        exit_price = eff_sl
-                    elif current_price >= position.tp_price:
-                        exit_triggered = True
-                        exit_reason = "take_profit"
-                        exit_price = position.tp_price
-                else:  # short
-                    if current_price >= eff_sl:
-                        exit_triggered = True
-                        exit_reason = "stop_loss"
-                        exit_price = eff_sl
-                    elif current_price <= position.tp_price:
-                        exit_triggered = True
-                        exit_reason = "take_profit"
-                        exit_price = position.tp_price
-
-                if exit_triggered:
-                    logger.info(f"Exiting {position.direction} position at {exit_price} ({exit_reason})")
-
-                    # Close position via API
-                    try:
-                        close_order = trader.close_position()
-                        if close_order:
-                            logger.info(f"Close order placed: {close_order}")
-
-                            # Record trade
-                            pnl_dollars = position.current_pnl_dollars(exit_price)
-                            risk_mgr.record_trade(pnl_dollars)
-                            trades_taken += 1
-
-                            trade = {
-                                'entry_time': position.entry_time,
-                                'exit_time': now,
-                                'direction': position.direction,
-                                'entry_price': position.entry_price,
-                                'exit_price': exit_price,
-                                'contracts': position.contracts,
-                                'pnl': pnl_dollars,
-                                'reason': exit_reason
-                            }
-                            logger.info(f"Trade closed: {trade}")
-
-                            position.reset()
-                        else:
-                            logger.error("Failed to close position")
-                    except Exception as e:
-                        logger.error(f"Error closing position: {e}")
-
-            # Check for entries (only if no position)
-            elif not position.active:
-                # Calculate stop distances
-                sl_dist = risk_mgr.calc_sl_distance(signals["atr"])
-                tp_dist = sl_dist * PARAMS["TP_RR"]
-                trail = signals["atr"] * PARAMS["TRAIL_ATR_MULT"]
-
-                entry_signal = False
-                direction = ""
-
-                if signals["uptrend"] and signals["stoch_d"] < PARAMS["STOCH_LO"] and signals["d_rising"]:
-                    entry_signal = True
-                    direction = "long"
-                elif signals["downtrend"] and signals["stoch_d"] > PARAMS["STOCH_HI"] and signals["d_falling"]:
-                    entry_signal = True
-                    direction = "short"
-
-                if entry_signal:
-                    logger.info(f"Entry signal detected: {direction} at {current_price}")
-
-                    # Calculate stop levels
-                    if direction == "long":
-                        sl_price = current_price - sl_dist
-                        tp_price = current_price + tp_dist
-                    else:
-                        sl_price = current_price + sl_dist
-                        tp_price = current_price - tp_dist
-
-                    # Place order
-                    try:
-                        if direction == "long":
-                            order = trader.place_market_order('BUY', PARAMS["CONTRACTS"])
-                        else:
-                            order = trader.place_market_order('SELL', PARAMS["CONTRACTS"])
-
-                        if order:
-                            logger.info(f"Order placed: {order}")
-
-                            # Update position tracking
-                            if direction == "long":
-                                position.open_long(current_price, sl_price, tp_price, trail, PARAMS["CONTRACTS"])
-                            else:
-                                position.open_short(current_price, sl_price, tp_price, trail, PARAMS["CONTRACTS"])
-
-                            trades_taken += 1
-                            logger.info(f"Position opened: {direction} {PARAMS['CONTRACTS']} contracts at {current_price}")
-                        else:
-                            logger.error("Failed to place order")
-
-                    except Exception as e:
-                        logger.error(f"Error placing order: {e}")
-
-            # Wait before next iteration
-            time.sleep(30)  # Check every 30 seconds
-
-        except KeyboardInterrupt:
-            logger.info("Received keyboard interrupt, shutting down...")
-            break
         except Exception as e:
-            logger.error(f"Unexpected error in trading loop: {e}")
-            time.sleep(60)  # Wait longer on errors
+            logger.error(f"Live trading failed: {e}")
+            return
 
-    # Cleanup
-    logger.info("Live trading session ended")
-
-    # Cancel any pending orders
-    try:
-        trader.cancel_all_orders()
-        logger.info("Cancelled all pending orders")
-    except Exception as e:
-        logger.error(f"Error cancelling orders: {e}")
-
-    # Close any open position
-    if position.active:
-        try:
-            close_order = trader.close_position()
-            if close_order:
-                logger.info(f"Closed remaining position: {close_order}")
-        except Exception as e:
-            logger.error(f"Error closing position: {e}")
-
-# =============================================================================
-# MAIN FUNCTION
-# =============================================================================
+    else:
+        # Backtest mode
+        logger.info("Starting BACKTEST mode")
+        run_backtest()
 
 if __name__ == "__main__":
     main()
