@@ -1,0 +1,29 @@
+
+📋 MT5 DATA EXPORT INSTRUCTIONS
+================================
+
+1. OPEN MT5 PLATFORM:
+   - Make sure MT5 is running and logged into demo account
+
+2. OPEN CHART:
+   - Search for MNQ symbol (Micro E-mini Nasdaq)
+   - Open 1-minute timeframe chart
+
+3. EXPORT HISTORICAL DATA:
+   - Right-click on chart
+   - Select "Export" → "Export to CSV"
+   - Choose date range (last 4 months)
+   - Select format: "All ticks" or "1 minute OHLC"
+   - Save file as: mnq_mt5_export.csv
+
+4. ALTERNATIVE METHOD:
+   - Go to Tools → History Center
+   - Select MNQ symbol
+   - Right-click → Export to CSV
+
+5. EXPECTED FORMAT:
+   <DATE>,<TIME>,<OPEN>,<HIGH>,<LOW>,<CLOSE>,<TICKVOL>
+   2026.02.26,10:30,24950.5,24955.2,24948.1,24952.8,1250
+
+6. RUN PROCESSING SCRIPT:
+   python3 mt5_data_extractor.py --input mnq_mt5_export.csv

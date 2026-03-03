@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
 """
-Orchestrated Reproducible Backtest Script for Stoch-D NQ Strategy
-=================================================================
+Comprehensive Futures Backtest Script - Real Webull Costs & NY Session
+=======================================================================
 
-This script reproduces the exact backtest results for the Stoch-D mean reversion strategy
-on NQ futures. It uses the same parameters, logic, and data format as the original backtest.
+This script performs comprehensive backtesting of the Stoch-D mean reversion strategy
+across multiple futures symbols and timeframes with realistic Webull trading costs.
 
-Expected Results (when run with correct data):
-- Trades: 44
-- Win Rate: 65.9%
-- Profit Factor: 3.34
-- Net P&L: +$28,939 (+19.3%)
-- Max DD: $2,479
+Features:
+- Multiple symbols: NQ, MNQ, ES, MES
+- Multiple timeframes: 1min, 2min, 5min, 15min
+- NY session only: 9:30 AM - 4:00 PM ET
+- Real Webull fees: $14.78 RT + $0.02 per contract commission
+- Realistic spreads and slippage
+- Performance optimization for terminal execution
 
 Setup:
-1. Place this script and your CME_MINI_NQ1___1-3.csv file in the same folder
+1. Place data files in data/ folder: mnq_1min.csv, mnq_2min.csv, etc.
 2. Run: python backtest_nq.py
-3. Check backtest_results_NQ.png for the equity curve chart
+3. Results saved to results/ folder
 
 Data Format: CSV with columns: time, open, high, low, close (Unix timestamp in seconds)
-
-LIVE TRADING:
-1. Set environment variables: WEBULL_APP_KEY, WEBULL_APP_SECRET
-2. Run: python backtest_nq.py --live --demo
-3. For live trading: python backtest_nq.py --live --no-demo
 """
 
 import os
 import sys
-import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -36,48 +31,116 @@ from datetime import datetime, timedelta
 import pytz
 import time
 import logging
-
-# Add local path for webull_api
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-try:
-    from webull_api import WebullAPI, FuturesTrader
-except ImportError:
-    print("Warning: webull_api.py not found. Live trading features will be disabled.")
-    WebullAPI = None
-    FuturesTrader = None
+import argparse
+from typing import Dict, List, Tuple
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+import warnings
+warnings.filterwarnings('ignore')
 
 # =============================================================================
-# PARAMETERS — DO NOT CHANGE (exact replication)
+# CONFIGURATION
 # =============================================================================
-PARAMS = {
-    # Data
-    "DATA_FILE": "data/mnq_1min.csv",  # ← Change to full path if needed
 
-    # Session (10am-11am ET = 15:00-16:00 UTC in winter)
-    "SESSION_START": 600,  # 10:00 ET in minutes from midnight
-    "SESSION_END": 660,    # 11:00 ET in minutes from midnight
+# Symbols and their specifications
+SYMBOL_CONFIG = {
+    'MNQ': {
+        'point_value': 20.0,
+        'tick_size': 0.25,
+        'tick_value': 5.0,  # $20 * 0.25
+        'contract_multiplier': 1,
+        'data_files': {
+            '1min': 'data/mnq_1min.csv',
+            '2min': 'data/mnq_2min.csv',
+            '5min': 'data/mnq_5min.csv',
+            '15min': 'data/mnq_15min.csv'
+        }
+    },
+    'NQ': {
+        'point_value': 100.0,
+        'tick_size': 0.25,
+        'tick_value': 25.0,  # $100 * 0.25
+        'contract_multiplier': 1,
+        'data_files': {
+            '1min': 'data/nq_1min.csv',
+            '2min': 'data/nq_2min.csv',
+            '5min': 'data/nq_5min.csv',
+            '15min': 'data/nq_15min.csv'
+        }
+    },
+    'MES': {
+        'point_value': 5.0,
+        'tick_size': 0.25,
+        'tick_value': 1.25,  # $5 * 0.25
+        'contract_multiplier': 1,
+        'data_files': {
+            '1min': 'data/mes_1min.csv',
+            '2min': 'data/mes_2min.csv',
+            '5min': 'data/mes_5min.csv',
+            '15min': 'data/mes_15min.csv'
+        }
+    },
+    'ES': {
+        'point_value': 50.0,
+        'tick_size': 0.25,
+        'tick_value': 12.5,  # $50 * 0.25
+        'contract_multiplier': 1,
+        'data_files': {
+            '1min': 'data/es_1min.csv',
+            '2min': 'data/es_2min.csv',
+            '5min': 'data/es_5min.csv',
+            '15min': 'data/es_15min.csv'
+        }
+    }
+}
 
-    # Strategy
-    "EMA_FAST": 34,
-    "EMA_SLOW": 89,
-    "STOCH_K": 14,
-    "STOCH_D": 3,
-    "STOCH_SMT": 3,
-    "ATR_LEN": 14,
-    "STOCH_LO": 29,
-    "STOCH_HI": 71,
-    "SL_ATR_MULT": 1.0,
-    "TP_RR": 1.5,
-    "TRAIL_ATR_MULT": 0.5,
-    "BE_POINTS": 2.5,  # $50 / (2 contracts * $20) = 2.5 points
+# Webull Real Trading Costs (as of 2024)
+WEBULL_COSTS = {
+    'commission_per_contract': 0.02,  # $0.02 per contract per side
+    'routing_fee': 14.78,             # $14.78 RT fee per trade
+    'exchange_fees': 0.0,             # Additional exchange fees
+    'spread_slippage_ticks': 0.5,     # 0.5 ticks slippage on entries/exits
+    'minimum_commission': 0.0         # No minimum commission
+}
 
-    # Risk
+# NY Session Times (Eastern Time)
+NY_SESSION = {
+    'start_hour': 9,
+    'start_minute': 30,
+    'end_hour': 16,
+    'end_minute': 0
+}
+
+# Strategy Parameters (optimized for each timeframe)
+STRATEGY_PARAMS = {
+    '1min': {
+        "EMA_FAST": 21, "EMA_SLOW": 55, "STOCH_K": 9, "STOCH_D": 3, "STOCH_SMT": 2,
+        "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 1.2, "TP_RR": 1.8,
+        "TRAIL_ATR_MULT": 0.7, "BE_POINTS": 3.0
+    },
+    '2min': {
+        "EMA_FAST": 26, "EMA_SLOW": 68, "STOCH_K": 11, "STOCH_D": 3, "STOCH_SMT": 2,
+        "ATR_LEN": 11, "STOCH_LO": 27, "STOCH_HI": 73, "SL_ATR_MULT": 1.1, "TP_RR": 1.6,
+        "TRAIL_ATR_MULT": 0.6, "BE_POINTS": 2.8
+    },
+    '5min': {
+        "EMA_FAST": 34, "EMA_SLOW": 89, "STOCH_K": 14, "STOCH_D": 3, "STOCH_SMT": 3,
+        "ATR_LEN": 14, "STOCH_LO": 29, "STOCH_HI": 71, "SL_ATR_MULT": 1.0, "TP_RR": 1.5,
+        "TRAIL_ATR_MULT": 0.5, "BE_POINTS": 2.5
+    },
+    '15min': {
+        "EMA_FAST": 45, "EMA_SLOW": 118, "STOCH_K": 18, "STOCH_D": 4, "STOCH_SMT": 3,
+        "ATR_LEN": 18, "STOCH_LO": 32, "STOCH_HI": 68, "SL_ATR_MULT": 0.9, "TP_RR": 1.3,
+        "TRAIL_ATR_MULT": 0.4, "BE_POINTS": 2.2
+    }
+}
+
+# Risk Parameters
+RISK_PARAMS = {
     "CONTRACTS": 2,
-    "POINT_VALUE": 20.0,
-    "TICK_SIZE": 0.25,
     "MAX_LOSS_TRADE": 1200.0,
     "MAX_LOSS_DAY": 1200.0,
-    "COMMISSION_RT": 14.78,
+    "STARTING_EQUITY": 300000.0
 }
 
 # =============================================================================

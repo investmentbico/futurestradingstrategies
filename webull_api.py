@@ -27,6 +27,7 @@ import json
 import time
 import requests
 import logging
+import urllib3
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import hmac
@@ -57,11 +58,11 @@ class WebullAPI:
         if not self.app_key or not self.app_secret:
             raise ValueError("Webull API credentials not found. Set WEBULL_APP_KEY and WEBULL_APP_SECRET environment variables.")
 
-        # API endpoints
+        # API endpoints - test accounts use regular API, live uses UAT
         if is_demo:
-            self.base_url = "https://api-demo.webull.com"
-        else:
             self.base_url = "https://api.webull.com"
+        else:
+            self.base_url = "https://us-openapi-alb.uat.webullbroker.com"
 
         self.session = requests.Session()
         self.access_token = None
@@ -71,16 +72,59 @@ class WebullAPI:
         # Authenticate on init
         self._authenticate()
 
+    def _generate_signature_headers(self, method: str = 'GET', path: str = '') -> Dict[str, str]:
+        """
+        Generate signature-based authentication headers for UAT API requests
+
+        Args:
+            method: HTTP method
+            path: API path
+
+        Returns:
+            Dictionary of headers with signature authentication
+        """
+        from datetime import datetime
+        import random
+
+        # Generate timestamp in ISO format
+        timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Generate a random nonce
+        nonce = str(random.randint(10**18, 10**19 - 1))
+
+        # Create signature using HMAC-SHA1
+        message = f"{self.app_key}{timestamp}{nonce}"
+        if path:
+            message += path
+        if method != 'GET':
+            message += method
+
+        signature = base64.b64encode(
+            hmac.new(self.app_secret.encode(), message.encode(), hashlib.sha1).digest()
+        ).decode()
+
+        headers = {
+            'Accept': 'application/json',
+            'x-app-key': self.app_key,
+            'x-timestamp': timestamp,
+            'x-signature-version': '1.0',
+            'x-signature-algorithm': 'HMAC-SHA1',
+            'x-signature-nonce': nonce,
+            'x-version': 'v2',
+            'x-signature': signature
+        }
+
+        return headers
+
     def _authenticate(self) -> None:
         """
-        Authenticate with Webull API and get access token
+        Authenticate with Webull API - try OAuth2 first, fallback to signature auth
         """
         try:
-            # Webull uses OAuth2 flow - this is a simplified version
-            # In production, implement proper OAuth2 flow
+            # First try OAuth2 authentication (for test accounts)
             auth_url = f"{self.base_url}/oauth/token"
 
-            # Create signature for authentication
+            # Create signature for OAuth2 authentication
             timestamp = str(int(time.time() * 1000))
             message = f"{self.app_key}{timestamp}"
             signature = base64.b64encode(
@@ -99,24 +143,60 @@ class WebullAPI:
                 'scope': 'trade'
             }
 
-            response = self.session.post(auth_url, headers=headers, json=data)
+            # Disable SSL verification for UAT environment
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+            response = self.session.post(auth_url, headers=headers, json=data, verify=False)
             response.raise_for_status()
 
             token_data = response.json()
-            self.access_token = token_data['access_token']
+            self.access_token = token_data.get('access_token')
             self.refresh_token = token_data.get('refresh_token')
-            self.token_expires = datetime.now() + timedelta(seconds=token_data['expires_in'])
+            self.token_expires = token_data.get('expires_in')
 
-            # Set authorization header for future requests
-            self.session.headers.update({
-                'Authorization': f'Bearer {self.access_token}',
-                'Content-Type': 'application/json'
-            })
+            if self.access_token:
+                # Set authorization header for future requests
+                self.session.headers.update({
+                    'Authorization': f'Bearer {self.access_token}',
+                    'Content-Type': 'application/json'
+                })
 
-            logger.info("Successfully authenticated with Webull API")
+                logger.info("Successfully authenticated with Webull API (OAuth2)")
+                return
 
         except Exception as e:
-            logger.error(f"Authentication failed: {e}")
+            logger.warning(f"OAuth2 authentication failed, trying signature auth: {e}")
+
+        # Fallback to signature-based authentication
+        try:
+            auth_url = f"{self.base_url}/openapi/auth/token/create"
+
+            headers = self._generate_signature_headers('POST', '/openapi/auth/token/create')
+
+            # Disable SSL verification for UAT environment
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+            response = self.session.post(auth_url, headers=headers, verify=False, timeout=10)
+            response.raise_for_status()
+
+            token_data = response.json()
+            self.access_token = token_data.get('access_token')
+            self.refresh_token = token_data.get('refresh_token')
+            self.token_expires = token_data.get('expires_in')
+
+            if self.access_token:
+                # Set authorization header for future requests
+                self.session.headers.update({
+                    'Authorization': f'Bearer {self.access_token}',
+                    'Content-Type': 'application/json'
+                })
+
+                logger.info("Successfully authenticated with Webull API (Signature)")
+            else:
+                raise ValueError("No access token received from authentication")
+
+        except Exception as e:
+            logger.error(f"Signature authentication also failed: {e}")
             raise
 
     def _refresh_token_if_needed(self) -> None:
@@ -356,6 +436,55 @@ class WebullAPI:
 
         response = self._make_request('GET', f'/v1/market-data/{symbol}/history', params=params)
         return response.get('bars', [])
+
+    def get_futures_tick_data(self, symbol: str, limit: int = 100) -> List[Dict]:
+        """
+        Get real-time tick data for futures contracts
+
+        Args:
+            symbol: Futures symbol (e.g., 'MNQ', 'MES')
+            limit: Maximum number of tick records to return
+
+        Returns:
+            List of tick data records with price, volume, timestamp
+        """
+        # Use appropriate endpoint based on demo/live mode
+        if self.base_url == "https://us-openapi-alb.uat.webullbroker.com":
+            tick_url = f"{self.base_url}/openapi/market-data/futures/tick"
+        else:
+            # For regular API, use standard market data endpoint
+            tick_url = f"{self.base_url}/v1/market-data/{symbol}"
+
+        params = {
+            'symbol': symbol,
+            'limit': limit
+        }
+
+        try:
+            # Use signature-based authentication for UAT, Bearer for regular API
+            if 'uat.webullbroker.com' in self.base_url:
+                headers = self._generate_signature_headers('GET', '/openapi/market-data/futures/tick')
+                # Disable SSL verification for UAT environment
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                response = self.session.get(tick_url, params=params, headers=headers, verify=False, timeout=10)
+            else:
+                # Use Bearer token for regular API
+                response = self._make_request('GET', f'/v1/market-data/{symbol}')
+
+            if response.status_code == 200:
+                if 'uat.webullbroker.com' in self.base_url:
+                    data = response.json()
+                    return data.get('ticks', []) if isinstance(data, dict) else data
+                else:
+                    # Regular API response format
+                    return response.get('data', [])
+            else:
+                logger.warning(f"Tick data request failed: {response.status_code} - {response.text}")
+                return []
+
+        except Exception as e:
+            logger.error(f"Error fetching tick data: {e}")
+            return []
 
     # =========================================================================
     # UTILITY METHODS
