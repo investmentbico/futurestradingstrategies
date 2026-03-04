@@ -51,11 +51,11 @@ except ImportError:
     load_dotenv()
 
 # Add current directory to path
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(PROJECT_DIR)
 
 try:
     from tastytrade_api import TastytradeAPI
-    from webull_api import FuturesTrader  # Keep for compatibility
 except ImportError:
     print("❌ Tastytrade API not found. Please ensure tastytrade_api.py is in the same directory.")
     sys.exit(1)
@@ -193,47 +193,60 @@ class MNQ1MinBot:
         self.logger.info(f"⚙️  Risk: {RISK_PARAMS['CONTRACTS']} contracts, Max Loss: ${RISK_PARAMS['MAX_LOSS_TRADE']}")
 
     def preload_historical_data(self):
-        """Pre-load last 10 bars of historical data for immediate trading"""
+        """Pre-load historical bars from CSV data for accurate indicator warm-up"""
         self.logger.info("📊 Pre-loading historical price data...")
 
-        # Generate 10 bars of recent historical data
-        base_price = 25180.0  # Current market level
-        current_time = datetime.now()
+        # Try to load real historical data from CSV files
+        csv_path = os.path.join(PROJECT_DIR, 'data', f'{self.symbol.lower()}_1min.csv')
+        loaded_from_csv = False
 
-        for i in range(10):
-            # Create realistic price movement
-            trend = (10 - i) * 2  # Slight upward trend
-            noise = np.random.normal(0, 20)  # Random noise appropriate for current market
-            current_price = base_price + trend + noise
+        if os.path.exists(csv_path):
+            try:
+                df = pd.read_csv(csv_path)
+                # Use the last 100 bars for indicator warm-up
+                warmup_bars = min(100, len(df))
+                df_tail = df.tail(warmup_bars)
 
-            # Create OHLC bar with realistic volatility
-            volatility = abs(current_price * 0.001) + 5  # Minimum 5 points range
-            high = current_price + volatility
-            low = current_price - volatility
+                for _, row in df_tail.iterrows():
+                    ohlc_bar = {
+                        'timestamp': datetime.fromtimestamp(row['time']),
+                        'open': float(row['open']),
+                        'high': float(row['high']),
+                        'low': float(row['low']),
+                        'close': float(row['close'])
+                    }
+                    self.price_data.append(ohlc_bar)
 
-            if self.price_data:
-                open_price = self.price_data[-1]['close']
+                loaded_from_csv = True
+                self.logger.info(f"✅ Loaded {warmup_bars} real bars from {csv_path}")
+            except Exception as e:
+                self.logger.warning(f"Could not load CSV data: {e}")
+
+        if not loaded_from_csv:
+            # Fallback: try to get a live price and build minimal bars
+            self.logger.warning("No CSV data found, using API price for warm-up")
+            price = self.api.get_current_price(self.symbol)
+            if price and price > 0:
+                base_price = price
             else:
-                open_price = current_price - volatility/2
+                base_price = 25180.0
 
-            # Ensure OHLC relationships
-            high = max(high, open_price, current_price)
-            low = min(low, open_price, current_price)
+            current_time = datetime.now()
+            for i in range(10):
+                noise = np.random.normal(0, 15)
+                cp = base_price + noise
+                vol = abs(cp * 0.0008)
+                ohlc_bar = {
+                    'timestamp': current_time - timedelta(minutes=(10-i)),
+                    'open': cp - vol,
+                    'high': cp + vol,
+                    'low': cp - vol,
+                    'close': cp
+                }
+                self.price_data.append(ohlc_bar)
+            self.logger.info(f"Pre-loaded {len(self.price_data)} synthetic bars (no CSV found)")
 
-            bar_time = current_time - timedelta(minutes=(10-i))
-
-            ohlc_bar = {
-                'timestamp': bar_time,
-                'open': open_price,
-                'high': high,
-                'low': low,
-                'close': current_price
-            }
-
-            self.price_data.append(ohlc_bar)
-
-        self.logger.info(f"✅ Pre-loaded {len(self.price_data)} historical bars")
-        self.logger.info(f"📈 Ready to trade immediately!")
+        self.logger.info(f"📈 Ready to trade with {len(self.price_data)} warm-up bars")
 
     def signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""

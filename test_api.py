@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Add current directory to path
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from webull_api import WebullAPI
 

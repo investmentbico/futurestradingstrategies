@@ -1,30 +1,28 @@
 #!/bin/bash
-# iTerm Setup Commands for 4-Tab Trading System
+# iTerm 4-Tab Trading System Setup
+# ==================================
+# Open 4 tabs in iTerm and run one script per tab.
+#
+# Quick setup: In each iTerm tab, cd to this project folder and run:
 
-echo "=== iTerm 4-Tab Trading System Setup ==="
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "=== MNQ 4-Tab Trading System ==="
+echo "Project: $PROJECT_DIR"
 echo ""
 echo "Tab 1 - REPOSITORY (Trading Bot):"
-echo "cd /Users/sunflowerhd/Desktop/FUTURE"
-echo "source .venv/bin/activate"
-echo "python3 mnq_live_bot.py --demo --max-trades 100"
+echo "  bash $PROJECT_DIR/tab1_repository.sh"
 echo ""
-echo "Tab 2 - BROKER EXCHANGE (API Monitor):"
-echo "cd /Users/sunflowerhd/Desktop/FUTURE"
-echo "source .venv/bin/activate"
-echo "watch -n 5 'python3 test_tastytrade.py'"
+echo "Tab 2 - BROKER (API Monitor):"
+echo "  bash $PROJECT_DIR/tab2_broker.sh"
 echo ""
 echo "Tab 3 - SERVER (Dashboard):"
-echo "cd /Users/sunflowerhd/Desktop/FUTURE"
-echo "source .venv/bin/activate"
-echo "python3 live_dashboard.py"
+echo "  bash $PROJECT_DIR/tab3_server.sh"
 echo ""
-echo "Tab 4 - LOCAL (Development/Monitoring):"
-echo "cd /Users/sunflowerhd/Desktop/FUTURE"
-echo "source .venv/bin/activate"
-echo "tail -f trading_session.log"
+echo "Tab 4 - LOCAL (Log Monitor):"
+echo "  bash $PROJECT_DIR/tab4_local.sh"
 echo ""
 echo "=== Quick Commands ==="
-echo "Start all: Run above commands in respective tabs"
-echo "Monitor: tail -f trading_session.log"
-echo "Test API: python3 test_tastytrade.py"
-echo "Kill all: pkill -f 'python3.*mnq_live_bot\|live_dashboard'"
+echo "Run backtest:  cd $PROJECT_DIR && source venv/bin/activate && python3 comprehensive_backtest.py"
+echo "Test API:      cd $PROJECT_DIR && source venv/bin/activate && python3 test_tastytrade.py"
+echo "Kill all:      pkill -f 'python3.*mnq_live_bot\|live_dashboard'"

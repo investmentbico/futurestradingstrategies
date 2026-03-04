@@ -9,7 +9,7 @@ import pandas as pd
 import sys
 
 # Add current directory to path
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def calc_ema(prices, period):
     k = 2.0 / (period + 1)
