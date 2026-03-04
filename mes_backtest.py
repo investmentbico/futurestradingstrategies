@@ -85,7 +85,7 @@ def calc_stoch(high: np.ndarray, low: np.ndarray, close: np.ndarray, k_period: i
 # BACKTEST ENGINE
 # =============================================================================
 
-class MNQBacktest:
+class MESBacktest:
     """Backtest engine for MNQ strategy with trade analysis improvements"""
 
     def __init__(self, symbol="MNQ", days=90):
@@ -101,10 +101,10 @@ class MNQBacktest:
         self.best_trading_hours = {11, 12, 15}  # Hours with highest win rates
     def download_data(self):
         """Load historical data from local CSV file"""
-        print(f"📊 Loading local MNQ 2-minute data...")
+        print(f"📊 Loading local MES 2-minute data...")
 
         import os
-        data_file = "data/mnq_2min.csv"
+        data_file = "data/mes_2min.csv"
 
         if not os.path.exists(data_file):
             raise ValueError(f"Data file not found: {data_file}")
@@ -463,11 +463,11 @@ class MNQBacktest:
 
 def main():
     """Test 1 contract configuration with last 3 months data"""
-    print("🚀 MNQ BACKTEST: 1 CONTRACT - LAST 3 MONTHS DATA")
+    print("🚀 MES BACKTEST: 1 CONTRACT - LAST 3 MONTHS DATA")
     print("=" * 70)
 
     # Load data (last 90 days = 3 months)
-    backtest = MNQBacktest(symbol='MNQ', days=90)
+    backtest = MESBacktest(symbol='MES', days=90)
     backtest.download_data()
 
     # Test 1 contract configuration
@@ -507,7 +507,7 @@ def main():
             'TAKE_PROFIT_MULTIPLIER': config['tp_mult']
         }
 
-        test_backtest = MNQBacktest(symbol='MNQ', days=30)
+        test_backtest = MESBacktest(symbol='MES', days=30)
         test_backtest.data = backtest.data.copy()
         test_backtest.risk_params = params
 
