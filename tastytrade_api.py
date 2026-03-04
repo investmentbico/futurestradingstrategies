@@ -33,8 +33,8 @@ class TastytradeAPI:
         self.paper_trading = paper_trading
         self.base_url = self.CERT_URL if paper_trading else self.BASE_URL
         self.session_token = None
-        # Use provided account number for paper trading
-        self.account_number = "5WW79624" if paper_trading else None
+        # Use account from env, or discover during auth
+        self.account_number = os.getenv('TASTYTRADE_ACCOUNT') or None
 
         if not self.username or not self.password:
             print("❌ Tastytrade credentials not found. Set TASTYTRADE_USER and TASTYTRADE_PASSWORD")
