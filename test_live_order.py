@@ -31,6 +31,7 @@ from tastytrade.instruments import Future
 from tastytrade.order import (
     NewOrder, Leg, OrderAction, OrderType, OrderTimeInForce, InstrumentType
 )
+from tastytrade.market_data import get_market_data
 
 # =============================================================================
 # TEST PARAMETERS
@@ -153,14 +154,42 @@ async def run_test(dry_run: bool):
         return 1
 
     # -------------------------------------------------------------------------
-    # Step 6: Build entry order (BUY 1 MNQ @ Market)
+    # Step 6: Get quote and build entry order (BUY 1 MNQ @ Limit)
     # -------------------------------------------------------------------------
-    print(f"\n[6/7] Building order: BUY {CONTRACTS} {symbol} @ MARKET")
+    print(f"\n[6/7] Getting quote and building limit order for {symbol}...")
+
+    # Get current bid/ask to place a limit order (avoids price band rejections)
+    try:
+        mkt_data = await get_market_data(session, symbol, InstrumentType.FUTURE)
+        ask_price = float(mkt_data.ask) if mkt_data.ask else None
+        bid_price = float(mkt_data.bid) if mkt_data.bid else None
+        mark_price = float(mkt_data.mark) if mkt_data.mark else None
+        last_price = float(mkt_data.last) if mkt_data.last else None
+        print(f"  Bid: ${bid_price:,.2f}" if bid_price else "  Bid: N/A")
+        print(f"  Ask: ${ask_price:,.2f}" if ask_price else "  Ask: N/A")
+        print(f"  Mark: ${mark_price:,.2f}" if mark_price else "  Mark: N/A")
+        print(f"  Last: ${last_price:,.2f}" if last_price else "  Last: N/A")
+    except Exception as e:
+        print(f"  WARNING: Could not get quote: {e}")
+        ask_price = bid_price = mark_price = last_price = None
+
+    # Determine limit price: use ask (for buy), fall back to mark or last
+    limit_price = ask_price or mark_price or last_price
+    if not limit_price:
+        print("  FAILED: No price data available. Market may be closed.")
+        return 1
+
+    # Round to MNQ tick size (0.25)
+    tick_size = float(active_future.tick_size) if active_future.tick_size else 0.25
+    limit_price = round(limit_price / tick_size) * tick_size
+
+    print(f"  Limit price: ${limit_price:,.2f} (tick size: {tick_size})")
 
     entry_leg = active_future.build_leg(Decimal(CONTRACTS), OrderAction.BUY_TO_OPEN)
     entry_order = NewOrder(
         time_in_force=OrderTimeInForce.DAY,
-        order_type=OrderType.MARKET,
+        order_type=OrderType.LIMIT,
+        price=Decimal(str(limit_price)),
         legs=[entry_leg],
     )
 
@@ -168,7 +197,7 @@ async def run_test(dry_run: bool):
     # Step 7: Validate or execute
     # -------------------------------------------------------------------------
     if dry_run:
-        print("\n[7/7] DRY RUN - Validating order (no execution)...")
+        print(f"\n[7/7] DRY RUN - Validating LIMIT order @ ${limit_price:,.2f} (no execution)...")
         try:
             response = await account.place_order(session, entry_order, dry_run=True)
             print(f"  VALIDATION OK")
@@ -190,7 +219,7 @@ async def run_test(dry_run: bool):
         return 0
 
     # --- LIVE EXECUTION ---
-    print(f"\n[7/7] PLACING LIVE ORDER: BUY {CONTRACTS} {symbol} @ MARKET")
+    print(f"\n[7/7] PLACING LIVE ORDER: BUY {CONTRACTS} {symbol} @ LIMIT ${limit_price:,.2f}")
     print("-" * 70)
 
     try:
@@ -204,17 +233,44 @@ async def run_test(dry_run: bool):
         print(f"  FAILED: {e}")
         return 1
 
-    # Wait for fill
+    # Wait for fill (with rejection detection)
     print("  Waiting for fill...")
     fill_price = None
-    for attempt in range(10):
+    order_rejected = False
+    for attempt in range(15):
         time.sleep(1)
         try:
+            # Check live orders first
             live_orders = await account.get_live_orders(session)
+            found = False
             for o in live_orders:
                 if o.id == order_id:
+                    found = True
+                    status_str = str(o.status).upper()
                     print(f"  Order status: {o.status}")
-                    if str(o.status).lower() in ('filled', 'routed'):
+                    if 'REJECT' in status_str:
+                        reject_reason = getattr(o, 'reject_reason', 'unknown')
+                        print(f"  ORDER REJECTED: {reject_reason}")
+                        order_rejected = True
+                        break
+                    if 'FILL' in status_str:
+                        if hasattr(o, 'legs') and o.legs:
+                            for leg in o.legs:
+                                if hasattr(leg, 'fills') and leg.fills:
+                                    fill_price = float(leg.fills[0].fill_price)
+                        break
+
+            # If not in live orders, check order history (may have filled or been rejected)
+            if not found and not fill_price and not order_rejected:
+                history = await account.get_order_history(session)
+                for o in history:
+                    if o.id == order_id:
+                        status_str = str(o.status).upper()
+                        if 'REJECT' in status_str:
+                            reject_reason = getattr(o, 'reject_reason', 'unknown')
+                            print(f"  ORDER REJECTED: {reject_reason}")
+                            order_rejected = True
+                            break
                         if hasattr(o, 'legs') and o.legs:
                             for leg in o.legs:
                                 if hasattr(leg, 'fills') and leg.fills:
@@ -222,8 +278,15 @@ async def run_test(dry_run: bool):
                         break
         except Exception:
             pass
-        if fill_price:
+
+        if fill_price or order_rejected:
             break
+
+    if order_rejected:
+        print("\n  Order was rejected by the exchange.")
+        print("  This may happen if the market is closed or price bands are too tight.")
+        print("  Try again during regular trading hours (Sun 6pm - Fri 5pm ET).")
+        return 1
 
     # If we couldn't get fill price from order, check positions
     if not fill_price:
@@ -237,27 +300,20 @@ async def run_test(dry_run: bool):
             pass
 
     if not fill_price:
-        print("  WARNING: Could not determine fill price. Using last known price.")
-        print("  Will still monitor and close position.")
-        # We'll use order history to try to find the fill
+        # Check if we actually have a position before giving up
         try:
-            history = await account.get_order_history(session)
-            for o in history:
-                if o.id == order_id and hasattr(o, 'legs') and o.legs:
-                    for leg in o.legs:
-                        if hasattr(leg, 'fills') and leg.fills:
-                            fill_price = float(leg.fills[0].fill_price)
-                            break
-                if fill_price:
-                    break
+            positions = await account.get_positions(session)
+            mnq_pos = [p for p in positions if 'MNQ' in (p.symbol or '')]
+            if not mnq_pos:
+                print("  No fill and no position found. Order may have expired or been cancelled.")
+                return 1
         except Exception:
             pass
+        print("  WARNING: Position exists but could not determine fill price.")
+        print("  Using limit price as estimate.")
+        fill_price = limit_price
 
-    if fill_price:
-        print(f"  FILLED at ${fill_price:,.2f}")
-    else:
-        print("  Could not determine fill price - will close position on any movement")
-        fill_price = 0  # Will force close on first price check
+    print(f"  FILLED at ${fill_price:,.2f}")
 
     stop_price = fill_price - STOP_POINTS if fill_price else 0
     target_profit_points = (MIN_PROFIT_DOLLARS + COMMISSION_RT) / POINT_VALUE
@@ -272,21 +328,27 @@ async def run_test(dry_run: bool):
     print("-" * 70)
 
     # Also place a server-side stop loss order for safety
-    print("  Placing server-side stop loss order...")
-    try:
-        stop_leg = active_future.build_leg(Decimal(CONTRACTS), OrderAction.SELL_TO_CLOSE)
-        stop_order = NewOrder(
-            time_in_force=OrderTimeInForce.DAY,
-            order_type=OrderType.STOP,
-            stop_trigger=Decimal(str(round(stop_price, 2))),
-            legs=[stop_leg],
-        )
-        stop_response = await account.place_order(session, stop_order, dry_run=False)
-        stop_order_id = stop_response.order.id if stop_response.order else None
-        print(f"  STOP ORDER PLACED - ID: {stop_order_id} @ ${stop_price:,.2f}")
-    except Exception as e:
-        stop_order_id = None
-        print(f"  WARNING: Could not place stop order: {e}")
+    stop_order_id = None
+    if stop_price > 0:
+        # Round stop price to tick size
+        stop_price = round(stop_price / tick_size) * tick_size
+        print(f"  Placing server-side stop loss order @ ${stop_price:,.2f}...")
+        try:
+            stop_leg = active_future.build_leg(Decimal(CONTRACTS), OrderAction.SELL_TO_CLOSE)
+            stop_order = NewOrder(
+                time_in_force=OrderTimeInForce.DAY,
+                order_type=OrderType.STOP,
+                stop_trigger=Decimal(str(stop_price)),
+                legs=[stop_leg],
+            )
+            stop_response = await account.place_order(session, stop_order, dry_run=False)
+            stop_order_id = stop_response.order.id if stop_response.order else None
+            print(f"  STOP ORDER PLACED - ID: {stop_order_id} @ ${stop_price:,.2f}")
+        except Exception as e:
+            print(f"  WARNING: Could not place stop order: {e}")
+            print("  Will rely on software-based stop monitoring")
+    else:
+        print("  WARNING: Invalid stop price, skipping server-side stop order")
         print("  Will rely on software-based stop monitoring")
 
     # Monitor loop
@@ -341,14 +403,37 @@ async def run_test(dry_run: bool):
 
     # Close position
     if exit_reason != "STOP ORDER TRIGGERED (server-side)":
-        print("  Closing position at market...")
+        print("  Closing position...")
         try:
+            # Get fresh bid price for the sell limit order
+            close_price = None
+            try:
+                mkt_data = await get_market_data(session, symbol, InstrumentType.FUTURE)
+                close_price = float(mkt_data.bid) if mkt_data.bid else None
+                if not close_price:
+                    close_price = float(mkt_data.mark) if mkt_data.mark else None
+            except Exception:
+                pass
+
             close_leg = active_future.build_leg(Decimal(CONTRACTS), OrderAction.SELL_TO_CLOSE)
-            close_order = NewOrder(
-                time_in_force=OrderTimeInForce.DAY,
-                order_type=OrderType.MARKET,
-                legs=[close_leg],
-            )
+
+            if close_price:
+                close_price = round(close_price / tick_size) * tick_size
+                print(f"  Sell limit @ ${close_price:,.2f}")
+                close_order = NewOrder(
+                    time_in_force=OrderTimeInForce.DAY,
+                    order_type=OrderType.LIMIT,
+                    price=Decimal(str(close_price)),
+                    legs=[close_leg],
+                )
+            else:
+                print("  No bid price available, using market order")
+                close_order = NewOrder(
+                    time_in_force=OrderTimeInForce.DAY,
+                    order_type=OrderType.MARKET,
+                    legs=[close_leg],
+                )
+
             close_response = await account.place_order(session, close_order, dry_run=False)
             print(f"  CLOSE ORDER PLACED - ID: {close_response.order.id if close_response.order else '?'}")
         except Exception as e:
