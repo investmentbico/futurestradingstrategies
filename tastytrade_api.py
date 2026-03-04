@@ -211,7 +211,7 @@ class TastytradeAPI:
         # Tastytrade has limited historical data, use for recent data only
         try:
             # For backtesting, we'd need to use their bar data endpoint
-            url = f"{self.base_url}/market-metrics/historicals/futures/{symbol}"
+            url = f"{self.base_url}/market-data/historicals/{symbol}"
             params = {
                 'interval': '1m',
                 'days': days
@@ -269,23 +269,22 @@ class TastytradeAPI:
 
     def get_account_balance(self) -> Optional[Dict]:
         """Get account balance"""
-        if self.paper_trading:
-            # Return mock balance for paper trading
-            return {
-                'cash': 20000.0,
-                'equity': 20000.0,
-                'margin': 0.0,
-                'account_number': self.account_number
-            }
-
         try:
             url = f"{self.base_url}/accounts/{self.account_number}/balances"
             response = requests.get(url, headers=self._get_headers())
             response.raise_for_status()
 
-            return response.json()['data']
+            return response.json().get('data', {})
 
         except Exception as e:
+            # For paper trading, fall back to a safe mock balance if API fails
+            if self.paper_trading:
+                return {
+                    'cash-balance': 20000.0,
+                    'buying-power': 20000.0,
+                    'net-liquidation': 20000.0,
+                    'account-number': self.account_number
+                }
             return None  # Silently return None on failure
 
     def get_positions(self) -> List[Dict]:

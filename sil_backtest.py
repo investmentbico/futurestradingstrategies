@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-MNQ Strategy Backtest with Real Historical Data
+SIL Strategy Backtest with Daily Historical Data
 ===============================================
 
-Backtests the live trading strategy using 30 days of 1-minute MNQ data from Tastytrade API.
-Provides comprehensive performance metrics including win rate, drawdown, P&L, etc.
+Backtests the trading strategy using daily SIL (Micro Silver) data.
+Adapted for daily timeframe with appropriate parameters for silver futures.
 """
 
 import pandas as pd
@@ -16,26 +16,26 @@ import os
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# STRATEGY PARAMETERS (Same as live bot)
+# STRATEGY PARAMETERS (Adapted for Daily SIL)
 # =============================================================================
 
 STRATEGY_PARAMS = {
-    'EMA_FAST': 21,
-    'EMA_SLOW': 55,
+    'EMA_FAST': 20,   # Longer for daily data
+    'EMA_SLOW': 50,   # Longer for daily data
     'STOCH_LO': 25,
     'STOCH_HI': 75,
-    'ATR_PERIOD': 9,
+    'ATR_PERIOD': 14,  # Standard ATR for daily
     'SL_ATR_MULT': 2.0,
-    'TP_RR': 1.8  # Take profit at 1.8:1 reward-to-risk ratio
+    'TP_RR': 1.8
 }
 
 RISK_PARAMS = {
     'CONTRACTS': 1,
-    'MAX_LOSS_TRADE': 75.0,  # $75 hard stop per trade
-    'HARD_STOP_DOLLARS': 75.0,  # $75 hard stop
-    'ATR_MULTIPLIER': 1.5,  # ATR multiplier for trailing stops
-    'ATR_PERIOD': 14,  # ATR lookback period
-    'TAKE_PROFIT_MULTIPLIER': 2.0  # Take profit as multiple of stop distance
+    'MAX_LOSS_TRADE': 200.0,  # Lower for silver volatility
+    'HARD_STOP_DOLLARS': 200.0,  # $200 hard stop for silver
+    'ATR_MULTIPLIER': 2.0,
+    'ATR_PERIOD': 14,
+    'TAKE_PROFIT_MULTIPLIER': 2.0
 }
 
 # =============================================================================
@@ -85,7 +85,7 @@ def calc_stoch(high: np.ndarray, low: np.ndarray, close: np.ndarray, k_period: i
 # BACKTEST ENGINE
 # =============================================================================
 
-class MNQBacktest:
+class SILBacktest:
     """Backtest engine for MNQ strategy with trade analysis improvements"""
 
     def __init__(self, symbol="MNQ", days=90):
@@ -101,10 +101,10 @@ class MNQBacktest:
         self.best_trading_hours = {11, 12, 15}  # Hours with highest win rates
     def download_data(self):
         """Load historical data from local CSV file"""
-        print(f"📊 Loading local MNQ 2-minute data...")
+        print(f"📊 Loading local SIL daily data...")
 
         import os
-        data_file = "data/mnq_2min.csv"
+        data_file = "data/sil_daily.csv"
 
         if not os.path.exists(data_file):
             raise ValueError(f"Data file not found: {data_file}")
@@ -228,18 +228,14 @@ class MNQBacktest:
         return df
 
     def check_entry_signals(self, row):
-        """Check for entry signals"""
-        # Long signal: Uptrend + D falling + Stoch oversold
-        if (row['uptrend'] and
-            row['d_falling'] and
-            row['stoch_oversold'] and
+        """Check for entry signals - very simple for daily data"""
+        # Long signal: EMA crossover
+        if (row['ema_fast'] > row['ema_slow'] and  # Uptrend
             row['atr'] > 0):
             return 'long'
 
-        # Short signal: Downtrend + D rising + Stoch overbought
-        if (row['downtrend'] and
-            row['d_rising'] and
-            row['stoch_overbought'] and
+        # Short signal: EMA crossover
+        if (row['ema_fast'] < row['ema_slow'] and  # Downtrend
             row['atr'] > 0):
             return 'short'
 
@@ -463,32 +459,23 @@ class MNQBacktest:
 
 def main():
     """Test 1 contract configuration with last 3 months data"""
-    print("🚀 MNQ BACKTEST: 1 CONTRACT - LAST 3 MONTHS DATA")
+    print("🚀 SIL BACKTEST: 1 CONTRACT - DAILY DATA")
     print("=" * 70)
 
     # Load data (last 90 days = 3 months)
-    backtest = MNQBacktest(symbol='MNQ', days=90)
+    backtest = SILBacktest(symbol='SIL', days=90)
     backtest.download_data()
 
     # Test 1 contract configuration
     configs = [
         {
-            'name': 'OPTIMIZED_1_CONTRACT',
+            'name': 'SIL_OPTIMIZED',
             'contracts': 1,
-            'hard_stop': 800,
-            'atr_mult': 2.0,  # Keep at 2.0x - analysis showed ATR stops work well
-            'atr_period': 20,
-            'tp_mult': 2.0,
-            'description': 'Optimized params with 1 contract - last 3 months (final)'
-        },
-        {
-            'name': 'TEST_200_HARD_STOP',
-            'contracts': 1,
-            'hard_stop': 200,  # Testing tighter $200 stop
+            'hard_stop': 200,  # $200 hard stop for silver volatility
             'atr_mult': 2.0,
-            'atr_period': 20,
+            'atr_period': 14,
             'tp_mult': 2.0,
-            'description': 'Testing $200 hard stop with 1 contract - last 3 months'
+            'description': 'Optimized params for SIL daily data'
         }
     ]
 
@@ -507,7 +494,7 @@ def main():
             'TAKE_PROFIT_MULTIPLIER': config['tp_mult']
         }
 
-        test_backtest = MNQBacktest(symbol='MNQ', days=30)
+        test_backtest = SILBacktest(symbol='SIL', days=30)
         test_backtest.data = backtest.data.copy()
         test_backtest.risk_params = params
 

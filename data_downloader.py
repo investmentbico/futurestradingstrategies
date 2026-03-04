@@ -11,6 +11,9 @@ Supported Symbols:
 - NQ: E-mini Nasdaq-100 Futures
 - ES: E-mini S&P 500 Futures
 - MES: Micro E-mini S&P 500 Futures
+- MGC: Micro Gold Futures
+- SIL: Micro Silver Futures
+- CL: WTI Crude Oil Futures
 
 Data Sources:
 1. Yahoo Finance (daily data)
@@ -43,13 +46,19 @@ YAHOO_SYMBOLS = {
     'NQ': 'NQ=F',    # E-mini Nasdaq
     'ES': 'ES=F',    # E-mini S&P 500
     'MES': 'MES=F',  # Micro E-mini S&P 500
+    'MGC': 'MGC=F',  # Micro Gold Futures
+    'SIL': 'SIL=F',  # Micro Silver Futures
+    'CL': 'CL=F',    # WTI Crude Oil Futures
 }
 
 ALPHA_VANTAGE_SYMBOLS = {
     'MNQ': 'MNQ',
     'NQ': 'NQ',
     'ES': 'ES',
-    'MES': 'MES'
+    'MES': 'MES',
+    'MGC': 'MGC',
+    'SIL': 'SIL',
+    'CL': 'CL'
 }
 
 # =============================================================================
