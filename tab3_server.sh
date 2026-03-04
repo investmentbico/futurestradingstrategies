@@ -1,7 +1,8 @@
 #!/bin/bash
 # Tab 3: SERVER - Dashboard
-cd /Users/sunflowerhd/Desktop/FUTURE
-source .venv/bin/activate
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+[ -f .venv/bin/activate ] && source .venv/bin/activate
 
 echo "📊 Starting Live Trading Dashboard..."
 echo "Press Ctrl+C to stop"

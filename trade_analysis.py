@@ -106,16 +106,16 @@ def analyze_trade_patterns():
             loss_trend_strength.append(trend_strength)
 
     print("ATR at Entry:")
-    print(".2f")
-    print(".2f")
+    print(f"   Winners avg: {np.mean(win_atr_values):.2f}" if win_atr_values else "   Winners avg: N/A")
+    print(f"   Losers avg:  {np.mean(loss_atr_values):.2f}" if loss_atr_values else "   Losers avg:  N/A")
 
     print("Stochastic D at Entry:")
-    print(".2f")
-    print(".2f")
+    print(f"   Winners avg: {np.mean(win_stoch_d):.2f}" if win_stoch_d else "   Winners avg: N/A")
+    print(f"   Losers avg:  {np.mean(loss_stoch_d):.2f}" if loss_stoch_d else "   Losers avg:  N/A")
 
     print("Trend Strength at Entry (EMA diff %):")
-    print(".4f")
-    print(".4f")
+    print(f"   Winners avg: {np.mean(win_trend_strength):.4f}" if win_trend_strength else "   Winners avg: N/A")
+    print(f"   Losers avg:  {np.mean(loss_trend_strength):.4f}" if loss_trend_strength else "   Losers avg:  N/A")
 
     # Analyze time-based patterns
     print("\n⏰ TIME-BASED PATTERNS:")
@@ -159,10 +159,10 @@ def analyze_trade_patterns():
     loss_pnls = [t['pnl'] for t in losing_trades]
 
     print("\n💰 P&L DISTRIBUTION:")
-    print(".0f")
-    print(".0f")
-    print(".0f")
-    print(".0f")
+    print(f"   Win avg:  ${np.mean(win_pnls):,.0f}" if win_pnls else "   Win avg:  N/A")
+    print(f"   Win max:  ${np.max(win_pnls):,.0f}" if win_pnls else "   Win max:  N/A")
+    print(f"   Loss avg: ${np.mean(loss_pnls):,.0f}" if loss_pnls else "   Loss avg: N/A")
+    print(f"   Loss max: ${np.min(loss_pnls):,.0f}" if loss_pnls else "   Loss max: N/A")
 
     return {
         'win_exit_reasons': win_exit_reasons,
@@ -293,7 +293,9 @@ class ImprovedMNQBacktest(MNQBacktest):
 '''
 
     # Write the improved class to a file
-    with open('/Users/sunflowerhd/Desktop/FUTURE/improved_mnq_backtest.py', 'w') as f:
+    output_dir = os.path.dirname(os.path.abspath(__file__))
+    improved_file = os.path.join(output_dir, 'improved_mnq_backtest.py')
+    with open(improved_file, 'w') as f:
         f.write('''
 import pandas as pd
 import numpy as np
@@ -310,8 +312,8 @@ def test_improved_strategy(improvements):
     print("=" * 35)
 
     # Import the improved backtest
-    import sys
-    sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from improved_mnq_backtest import ImprovedMNQBacktest
 
     # Run improved backtest
@@ -331,10 +333,10 @@ def test_improved_strategy(improvements):
 
     print("🎯 IMPROVED STRATEGY RESULTS:")
     print(f"   Trades: {improved_result['total_trades']}")
-    print(".1f")
-    print(".0f")
-    print(".2f")
-    print(".1f")
+    print(f"   Win Rate: {improved_result['win_rate']:.1f}%")
+    print(f"   Total P&L: ${improved_result['total_pnl']:,.0f}")
+    print(f"   Profit Factor: {improved_result.get('profit_factor', 0):.2f}")
+    print(f"   Max Drawdown: ${improved_result.get('max_drawdown', 0):,.1f}")
 
     return improved_result
 

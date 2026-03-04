@@ -7,9 +7,10 @@ Testing more aggressive parameters with higher contract sizes
 import numpy as np
 import pandas as pd
 import sys
+import os
 
 # Add current directory to path
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def calc_ema(prices, period):
     k = 2.0 / (period + 1)

@@ -51,7 +51,7 @@ except ImportError:
     load_dotenv()
 
 # Add current directory to path
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from tastytrade_api import TastytradeAPI

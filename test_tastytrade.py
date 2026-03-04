@@ -5,7 +5,7 @@ Quick test of Tastytrade API authentication and price fetching
 
 import os
 import sys
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Load environment variables from .env file
 from dotenv import load_dotenv

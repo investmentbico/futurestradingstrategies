@@ -1,7 +1,8 @@
 #!/bin/bash
 # Tab 2: BROKER EXCHANGE - API Monitor
-cd /Users/sunflowerhd/Desktop/FUTURE
-source .venv/bin/activate
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+[ -f .venv/bin/activate ] && source .venv/bin/activate
 
 echo "🔄 Starting Tastytrade API Monitor (updates every 5 seconds)..."
 echo "Press Ctrl+C to stop"

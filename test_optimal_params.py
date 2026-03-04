@@ -9,7 +9,7 @@ import sys
 import os
 
 # Add current directory to path to import backtest functions
-sys.path.append('/Users/sunflowerhd/Desktop/FUTURE')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import backtest functions (assuming they exist in comprehensive_backtest.py)
 # For now, I'll copy the necessary functions
