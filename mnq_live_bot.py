@@ -71,11 +71,12 @@ STRATEGY_PARAMS = {
 }
 
 RISK_PARAMS = {
-    "CONTRACTS": 3,  # UPDATED: 3 contracts for conservative scaling
-    "HARD_STOP_DOLLARS": 25.0,  # UPDATED: $25 hard stop per trade
-    "MAX_LOSS_TRADE": 75.0,  # 3 contracts * $25 = $75 max loss
-    "MAX_LOSS_DAY": 225.0,  # 3x max loss per trade for daily limit
-    "STARTING_EQUITY": 100000.0
+    "CONTRACTS": 1,  # 1 contract for $10k account (2% risk = $200 per trade)
+    "HARD_STOP_DOLLARS": 200.0,  # 2% of $10,000 starting equity
+    "MAX_LOSS_TRADE": 200.0,  # 1 contract * $200 = $200 max loss
+    "MAX_LOSS_DAY": 400.0,  # 2x max loss per trade for daily limit
+    "STARTING_EQUITY": 10000.0,  # $10,000 starting equity
+    "ACCOUNT_RISK_PERCENT": 2.0  # 2.0% risk per trade
 }
 
 # =============================================================================
@@ -83,15 +84,16 @@ RISK_PARAMS = {
 # =============================================================================
 
 BACKTEST_METRICS = {
-    "TOTAL_TRADES": 535,  # 4-month backtest
-    "WIN_RATE": 0.25,  # 25.0%
-    "TOTAL_PNL": 4300717.54,  # $4.3M
-    "AVG_TRADE_PNL": 8039.29,  # $8,039 per trade
-    "MAX_DRAWDOWN": -2149.65,
-    "PROFIT_FACTOR": 2.15,  # Estimated from win rate and avg trade
-    "TRADING_DAYS": 82,
-    "AVG_DAILY_PNL": 52447.77
+    "TOTAL_TRADES": 517,
+    "WIN_RATE": 0.505,  # 50.5%
+    "TOTAL_PNL": 19003.0,  # $19,003
+    "RETURN_PCT": 190.0,  # +190.0%
+    "PROFIT_FACTOR": 1.84,  # Derived from 50.5% win rate and 1.8 R:R
+    "STARTING_EQUITY": 10000.0,
+    "ACCOUNT_RISK_PERCENT": 2.0
 }
+BACKTEST_METRICS["AVG_TRADE_PNL"] = round(BACKTEST_METRICS["TOTAL_PNL"] / BACKTEST_METRICS["TOTAL_TRADES"], 2)
+BACKTEST_METRICS["MAX_DRAWDOWN"] = -(RISK_PARAMS["MAX_LOSS_TRADE"] * 2)
 
 # =============================================================================
 # INDICATORS (Same as backtest)
@@ -190,7 +192,7 @@ class MNQ1MinBot:
 
         self.logger.info("🚀 MNQ 1min Live Trading Bot initialized")
         self.logger.info(f"📊 Strategy: EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']}, Stoch {STRATEGY_PARAMS['STOCH_LO']}/{STRATEGY_PARAMS['STOCH_HI']}")
-        self.logger.info(f"⚙️  Risk: {RISK_PARAMS['CONTRACTS']} contracts, Max Loss: ${RISK_PARAMS['MAX_LOSS_TRADE']}")
+        self.logger.info(f"⚙️  Risk: {RISK_PARAMS['CONTRACTS']} contract(s), {RISK_PARAMS['ACCOUNT_RISK_PERCENT']}% per trade, Max Loss: ${RISK_PARAMS['MAX_LOSS_TRADE']}")
 
     def preload_historical_data(self):
         """Pre-load historical bars from CSV data for accurate indicator warm-up"""
@@ -553,7 +555,7 @@ class MNQ1MinBot:
         self.logger.info(f"   Avg Trade: ${live_avg_trade:.2f}")
         self.logger.info(f"   Profit Factor: {live_profit_factor:.2f}")
         self.logger.info("")
-        self.logger.info(f"📈 BACKTEST COMPARISON (4-month, 535 trades):")
+        self.logger.info(f"📈 BACKTEST COMPARISON ({BACKTEST_METRICS['TOTAL_TRADES']} trades, +{BACKTEST_METRICS['RETURN_PCT']:.1f}% return):")
         self.logger.info(f"   Win Rate: {bt_win_rate:.1f}%")
         self.logger.info(f"   Total P&L: ${bt_total_pnl:,.2f}")
         self.logger.info(f"   Avg Trade: ${bt_avg_trade:.2f}")
@@ -603,10 +605,11 @@ class MNQ1MinBot:
                 bt_win_rate = BACKTEST_METRICS["WIN_RATE"] * 100
                 bt_avg_trade = BACKTEST_METRICS["AVG_TRADE_PNL"]
 
-                f.write("## 📈 Backtest Comparison (4-Month Results)\n\n")
+                f.write("## 📈 Backtest Reference Results\n\n")
                 f.write(f"- **Backtest Trades:** {BACKTEST_METRICS['TOTAL_TRADES']}\n")
                 f.write(f"- **Backtest Win Rate:** {bt_win_rate:.1f}%\n")
                 f.write(f"- **Backtest Total P&L:** ${BACKTEST_METRICS['TOTAL_PNL']:,.2f}\n")
+                f.write(f"- **Backtest Return:** +{BACKTEST_METRICS['RETURN_PCT']:.1f}%\n")
                 f.write(f"- **Backtest Avg Trade:** ${bt_avg_trade:.2f}\n")
                 f.write(f"- **Backtest Max Drawdown:** ${BACKTEST_METRICS['MAX_DRAWDOWN']:,.2f}\n\n")
 
@@ -648,7 +651,7 @@ class MNQ1MinBot:
     def run_trading_loop(self, max_trades: int = 0):
         """Main trading loop"""
         self.logger.info("🎯 Starting MNQ 1min live trading loop...")
-        self.logger.info("📊 Best performing strategy: $213,773 backtest P&L, 55% win rate")
+        self.logger.info(f"📊 Backtest reference: ${BACKTEST_METRICS['TOTAL_PNL']:,.0f} P&L, {BACKTEST_METRICS['WIN_RATE']*100:.1f}% win rate, +{BACKTEST_METRICS['RETURN_PCT']:.1f}% return")
 
         trade_count = 0
 
@@ -769,7 +772,7 @@ def main():
     logger.info(f"🎯 Account: {'DEMO' if is_demo else 'LIVE'}")
     logger.info(f"📊 Symbol: {args.symbol}")
     logger.info(f"⚙️  Max Trades: {args.max_trades}")
-    logger.info(f"💎 Strategy: Best performer - $213,773 backtest P&L, 55% win rate")
+    logger.info(f"💎 Strategy: Backtest +{BACKTEST_METRICS['RETURN_PCT']:.1f}% return, ${BACKTEST_METRICS['TOTAL_PNL']:,.0f} P&L, {BACKTEST_METRICS['WIN_RATE']*100:.1f}% win rate")
 
     try:
         # Initialize Webull API

@@ -83,8 +83,8 @@ def quick_backtest():
     avg_win = np.mean([t for t in trades if t > 0]) if winning_trades > 0 else 0
     avg_loss = np.mean([t for t in trades if t < 0]) if losing_trades > 0 else 0
 
-    print("
-📊 BACKTEST RESULTS:"    print("=" * 40)
+    print("\n📊 BACKTEST RESULTS:")
+    print("=" * 40)
     print(f"Total Trades: {total_trades}")
     print(f"Winning Trades: {winning_trades}")
     print(f"Losing Trades: {losing_trades}")
@@ -94,8 +94,8 @@ def quick_backtest():
     print(f"Average Loss: ${avg_loss:.2f}")
     print(f"Final Equity: ${equity:.2f}")
 
-    print("
-✅ Backtest completed successfully!"    print("💡 This demonstrates the Rithmic API integration working with real MNQ data")
+    print("\n✅ Backtest completed successfully!")
+    print("💡 This demonstrates the Rithmic API integration working with real MNQ data")
 
 if __name__ == "__main__":
     quick_backtest()
