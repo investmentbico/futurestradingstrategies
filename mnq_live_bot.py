@@ -3,22 +3,21 @@
 MNQ 1min Live Trading Bot
 ==========================
 
-🏆 WINNER STRATEGY - OPTIMIZED PARAMETERS (2026)
-- MNQ 1min: $12,064,511 P&L, 7.6% win rate, 64.22 profit factor
-- Parameters: EMA 21/55, Stoch 25/75, ATR 9, SL 2.0 ATR, TP 1.8 RR
-- Risk Management: 15 contracts, $80 hard stop, Max $2,377 daily drawdown
+🏆 BACKTEST WINNER #1 (Tastytrade Realistic Fees, $10K, 6mo)
+- MNQ 1ct: $38,050 P&L (+380%), 42.9% win rate, 1.36 PF, 21.9% max DD
+- Parameters: EMA 21/55, Stoch 25/75, ATR 9, SL $100 hard stop, TP 2.5 R:R
 
 Features:
-- Real-time MNQ 1min data from Webull
+- Real-time MNQ 1min data via Tastytrade API
 - Live strategy execution on demo account
 - Dual stop loss system (ATR + Hard Dollar Stop)
+- Pre-loads 100 real historical bars for indicator warm-up
 - Comprehensive logging and monitoring
-- Emergency stop functionality
 
 Setup:
-1. Ensure .env file has Webull credentials
+1. Create .env with TASTYTRADE_USER and TASTYTRADE_PASSWORD
 2. Run: python mnq_live_bot.py --demo
-3. Monitor logs in trading.log
+3. Monitor logs: tail -f trading_session.log
 """
 
 import os
@@ -66,16 +65,16 @@ except ImportError:
 
 STRATEGY_PARAMS = {
     "EMA_FAST": 21, "EMA_SLOW": 55, "STOCH_K": 9, "STOCH_D": 3, "STOCH_SMT": 2,
-    "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 2.0, "TP_RR": 1.8,
+    "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 2.0, "TP_RR": 2.5,
     "TRAIL_ATR_MULT": 0.7, "BE_POINTS": 3.0
 }
 
 RISK_PARAMS = {
-    "CONTRACTS": 3,  # UPDATED: 3 contracts for conservative scaling
-    "HARD_STOP_DOLLARS": 25.0,  # UPDATED: $25 hard stop per trade
-    "MAX_LOSS_TRADE": 75.0,  # 3 contracts * $25 = $75 max loss
-    "MAX_LOSS_DAY": 225.0,  # 3x max loss per trade for daily limit
-    "STARTING_EQUITY": 100000.0
+    "CONTRACTS": 1,             # BACKTEST WINNER: 1 contract for $10K account
+    "HARD_STOP_DOLLARS": 100.0, # BACKTEST WINNER: $100 hard stop per trade
+    "MAX_LOSS_TRADE": 100.0,    # 1 contract * $100 = $100 max loss
+    "MAX_LOSS_DAY": 300.0,      # 3x max loss per trade for daily limit
+    "STARTING_EQUITY": 10000.0
 }
 
 # =============================================================================
@@ -83,14 +82,14 @@ RISK_PARAMS = {
 # =============================================================================
 
 BACKTEST_METRICS = {
-    "TOTAL_TRADES": 535,  # 4-month backtest
-    "WIN_RATE": 0.25,  # 25.0%
-    "TOTAL_PNL": 4300717.54,  # $4.3M
-    "AVG_TRADE_PNL": 8039.29,  # $8,039 per trade
-    "MAX_DRAWDOWN": -2149.65,
-    "PROFIT_FACTOR": 2.15,  # Estimated from win rate and avg trade
-    "TRADING_DAYS": 82,
-    "AVG_DAILY_PNL": 52447.77
+    "TOTAL_TRADES": 1500,       # 6-month Tastytrade realistic backtest
+    "WIN_RATE": 0.429,          # 42.9%
+    "TOTAL_PNL": 38050.0,       # $38,050 from $10K
+    "AVG_TRADE_PNL": 25.37,     # $25.37 per trade
+    "MAX_DRAWDOWN": -2297.60,   # 21.9% max drawdown
+    "PROFIT_FACTOR": 1.36,
+    "TRADING_DAYS": 123,
+    "AVG_DAILY_PNL": 309.35
 }
 
 # =============================================================================

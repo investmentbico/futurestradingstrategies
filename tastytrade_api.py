@@ -124,11 +124,32 @@ class TastytradeAPI:
             return "Unknown"
 
     def _get_headers(self) -> Dict:
-        """Get authorization headers"""
+        """Get authorization headers - Tastytrade uses plain token, NOT Bearer"""
         return {
-            'Authorization': f'Bearer {self.session_token}',
+            'Authorization': self.session_token,
             'Content-Type': 'application/json'
         }
+
+    def get_futures_symbol(self, product_code: str = "MNQ") -> Optional[str]:
+        """Get the active front-month futures contract symbol (e.g. /MNQH6)"""
+        try:
+            url = f"{self.base_url}/instruments/futures"
+            params = {'product-code': product_code}
+            response = requests.get(url, headers=self._get_headers(), params=params)
+            if response.status_code == 200:
+                items = response.json().get('data', {}).get('items', [])
+                # Find the first active contract that isn't closing-only
+                for item in items:
+                    if not item.get('is-closing-only', True):
+                        symbol = item.get('symbol')
+                        if symbol:
+                            return symbol
+                # Fallback to first contract
+                if items:
+                    return items[0].get('symbol')
+        except Exception as e:
+            pass
+        return None
 
     def get_current_price(self, symbol: str = "MNQ") -> Optional[float]:
         """Get current price for MNQ - try Tastytrade first, then Yahoo Finance fallback"""
@@ -240,53 +261,78 @@ class TastytradeAPI:
             return []
 
     def place_market_order(self, symbol: str, side: str, quantity: int) -> Optional[Dict]:
-        """Place market order for MNQ"""
+        """Place market order for futures. Resolves product code (MNQ) to active contract (/MNQH6)."""
         try:
+            # Resolve to active futures contract symbol if needed
+            futures_symbol = symbol if symbol.startswith('/') else self.get_futures_symbol(symbol)
+            if not futures_symbol:
+                futures_symbol = f"/{symbol}H6"  # Fallback to March 2026 contract
+                print(f"  Using fallback symbol: {futures_symbol}")
+
             order_url = f"{self.base_url}/accounts/{self.account_number}/orders"
 
-            # MNQ futures order
+            # Tastytrade futures order format
+            # Side mapping: BUY -> 'Buy to Open', SELL -> 'Sell to Close' (or 'Sell to Open' for shorts)
+            if side.upper() == 'BUY':
+                action = 'Buy to Open'
+            elif side.upper() == 'SELL':
+                action = 'Sell to Close'
+            else:
+                action = side
+
             order_data = {
-                "type": "Market",
+                "order-type": "Market",
                 "time-in-force": "Day",
                 "legs": [{
                     "instrument-type": "Future",
-                    "symbol": symbol,
+                    "symbol": futures_symbol,
                     "quantity": quantity,
-                    "action": side.upper()  # BUY or SELL
+                    "action": action
                 }]
             }
 
+            print(f"  Placing order: {action} {quantity} {futures_symbol}")
             response = requests.post(order_url, headers=self._get_headers(), json=order_data)
             response.raise_for_status()
 
             order = response.json()
-            print(f"✅ Order placed: {side} {quantity} {symbol} - ID: {order['data']['id']}")
-            return order['data']
+            order_id = order.get('data', {}).get('id', 'unknown')
+            print(f"✅ Order placed: {action} {quantity} {futures_symbol} - ID: {order_id}")
+            return order.get('data')
 
+        except requests.exceptions.HTTPError as e:
+            error_body = e.response.text if e.response else str(e)
+            print(f"❌ Order failed ({e.response.status_code if e.response else '?'}): {error_body[:300]}")
+            return None
         except Exception as e:
             print(f"❌ Failed to place order: {e}")
             return None
 
     def get_account_balance(self) -> Optional[Dict]:
-        """Get account balance"""
-        if self.paper_trading:
-            # Return mock balance for paper trading
-            return {
-                'cash': 20000.0,
-                'equity': 20000.0,
-                'margin': 0.0,
-                'account_number': self.account_number
-            }
-
+        """Get real account balance from API"""
         try:
             url = f"{self.base_url}/accounts/{self.account_number}/balances"
             response = requests.get(url, headers=self._get_headers())
             response.raise_for_status()
 
-            return response.json()['data']
+            data = response.json().get('data', {})
+            return {
+                'cash': float(data.get('cash-balance', data.get('cash', 0))),
+                'equity': float(data.get('net-liquidating-value', data.get('equity', 0))),
+                'margin': float(data.get('maintenance-requirement', data.get('margin', 0))),
+                'buying_power': float(data.get('derivative-buying-power', 0)),
+                'account_number': self.account_number
+            }
 
         except Exception as e:
-            return None  # Silently return None on failure
+            # Fallback for paper trading if API doesn't support balances
+            if self.paper_trading:
+                return {
+                    'cash': 20000.0, 'equity': 20000.0,
+                    'margin': 0.0, 'buying_power': 20000.0,
+                    'account_number': self.account_number
+                }
+            return None
 
     def get_positions(self) -> List[Dict]:
         """Get current positions"""
@@ -318,8 +364,34 @@ class TastytradeAPI:
         if quantity == 0:
             return None
 
-        side = 'SELL' if position.get('quantity', 0) > 0 else 'BUY'
-        return self.place_market_order(symbol, side, quantity)
+        # Resolve to active futures contract
+        futures_symbol = position.get('symbol') or self.get_futures_symbol(symbol)
+        if not futures_symbol:
+            futures_symbol = f"/{symbol}H6"
+
+        # Determine close action
+        is_long = int(position.get('quantity', 0)) > 0
+        action = 'Sell to Close' if is_long else 'Buy to Close'
+
+        try:
+            order_url = f"{self.base_url}/accounts/{self.account_number}/orders"
+            order_data = {
+                "order-type": "Market",
+                "time-in-force": "Day",
+                "legs": [{
+                    "instrument-type": "Future",
+                    "symbol": futures_symbol,
+                    "quantity": quantity,
+                    "action": action
+                }]
+            }
+            print(f"  Closing: {action} {quantity} {futures_symbol}")
+            response = requests.post(order_url, headers=self._get_headers(), json=order_data)
+            response.raise_for_status()
+            return response.json().get('data')
+        except Exception as e:
+            print(f"❌ Failed to close position: {e}")
+            return None
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order"""
