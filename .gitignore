@@ -55,4 +55,4 @@ backtest_results_*.png
 
 # Trading
 orders.json
-positions.json
+positions.jsonbot_state.json
