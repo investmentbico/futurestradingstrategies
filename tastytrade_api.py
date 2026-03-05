@@ -30,6 +30,9 @@ class TastytradeAPI:
         self.password = password or os.getenv('TASTYTRADE_PASSWORD')
         self.client_id = client_id or os.getenv('TASTYTRADE_CLIENT_ID') or "18932fb1-8eb9-42c9-b96e-511fa936a42d"
         self.client_secret = client_secret or os.getenv('TASTYTRADE_CLIENT_SECRET') or "d68f7eae08499c6ca92d0f7a7e443b7de04e2d0d"
+        # OAuth2 refresh token and provider secret
+        self.provider_secret = os.getenv('TT_SECRET') or self.client_secret
+        self.refresh_token = os.getenv('TT_REFRESH')
         self.paper_trading = paper_trading
         self.base_url = self.CERT_URL if paper_trading else self.BASE_URL
         self.session_token = None
@@ -40,10 +43,54 @@ class TastytradeAPI:
             print("❌ Tastytrade credentials not found. Set TASTYTRADE_USER and TASTYTRADE_PASSWORD")
             return
 
+        # Try OAuth2 refresh token first (bypasses device challenge)
+        if self.refresh_token and self.provider_secret:
+            if self.authenticate_oauth():
+                return
+
+        # Fall back to session-based login
         self.authenticate()
 
+    def authenticate_oauth(self) -> bool:
+        """Authenticate using OAuth2 refresh token (bypasses device challenge)"""
+        try:
+            oauth_url = f"{self.base_url}/oauth/token"
+            payload = {
+                "grant_type": "refresh_token",
+                "client_secret": self.provider_secret,
+                "refresh_token": self.refresh_token,
+            }
+
+            print(f"🔐 Attempting OAuth2 refresh token authentication...")
+            response = requests.post(oauth_url, json=payload)
+            print(f"📡 OAuth response status: {response.status_code}")
+
+            if response.status_code == 200:
+                data = response.json()
+                access_token = data.get('data', {}).get('access_token') or data.get('access_token')
+                if access_token:
+                    self.session_token = access_token
+                    print(f"✅ OAuth2 access token obtained: {self.session_token[:20]}...")
+
+                    # Get account number if not set
+                    if not self.account_number:
+                        self.account_number = self._get_account_number()
+
+                    print(f"🎉 OAuth2 authenticated successfully - Account: {self.account_number}")
+                    return True
+                else:
+                    print(f"⚠️ OAuth response missing access_token: {list(data.keys())}")
+                    return False
+            else:
+                print(f"⚠️ OAuth2 auth failed ({response.status_code}): {response.text[:200]}")
+                return False
+
+        except Exception as e:
+            print(f"⚠️ OAuth2 auth failed: {e}")
+            return False
+
     def authenticate(self) -> bool:
-        """Authenticate with Tastytrade API"""
+        """Authenticate with Tastytrade API (session-based login)"""
         try:
             auth_url = f"{self.base_url}/sessions"
             payload = {
@@ -124,9 +171,16 @@ class TastytradeAPI:
             return "Unknown"
 
     def _get_headers(self) -> Dict:
-        """Get authorization headers - Tastytrade uses plain token, NOT Bearer"""
+        """Get authorization headers - OAuth2 uses Bearer, session uses plain token"""
+        token = self.session_token or ''
+        # OAuth2 tokens need Bearer prefix; session tokens are sent as-is
+        if token and not token.startswith('Bearer ') and len(token) > 100:
+            # Long tokens are likely OAuth2 JWT access tokens
+            auth_value = f"Bearer {token}"
+        else:
+            auth_value = token
         return {
-            'Authorization': self.session_token,
+            'Authorization': auth_value,
             'Content-Type': 'application/json'
         }
 
