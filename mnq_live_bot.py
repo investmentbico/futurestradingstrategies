@@ -65,15 +65,15 @@ except ImportError:
 
 STRATEGY_PARAMS = {
     "EMA_FAST": 21, "EMA_SLOW": 55, "STOCH_K": 9, "STOCH_D": 3, "STOCH_SMT": 2,
-    "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 2.0, "TP_RR": 2.5,
+    "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 2.0, "TP_RR": 1.8,
     "TRAIL_ATR_MULT": 0.7, "BE_POINTS": 3.0
 }
 
 RISK_PARAMS = {
-    "CONTRACTS": 1,             # BACKTEST WINNER: 1 contract for $10K account
-    "HARD_STOP_DOLLARS": 100.0, # BACKTEST WINNER: $100 hard stop per trade
-    "MAX_LOSS_TRADE": 100.0,    # 1 contract * $100 = $100 max loss
-    "MAX_LOSS_DAY": 300.0,      # 3x max loss per trade for daily limit
+    "CONTRACTS": 1,             # 1 contract for live test
+    "HARD_STOP_DOLLARS": 30.0,  # BACKTEST WINNER: $30 hard stop (best PF 9.40, lowest DD)
+    "MAX_LOSS_TRADE": 30.0,     # 1 contract * $30 = $30 max loss per trade
+    "MAX_LOSS_DAY": 150.0,      # 5x max loss per trade for daily limit
     "STARTING_EQUITY": 10000.0
 }
 
@@ -82,14 +82,15 @@ RISK_PARAMS = {
 # =============================================================================
 
 BACKTEST_METRICS = {
-    "TOTAL_TRADES": 1500,       # 6-month Tastytrade realistic backtest
-    "WIN_RATE": 0.429,          # 42.9%
-    "TOTAL_PNL": 38050.0,       # $38,050 from $10K
-    "AVG_TRADE_PNL": 25.37,     # $25.37 per trade
-    "MAX_DRAWDOWN": -2297.60,   # 21.9% max drawdown
-    "PROFIT_FACTOR": 1.36,
-    "TRADING_DAYS": 123,
-    "AVG_DAILY_PNL": 309.35
+    # 2MIN timeframe, $30 hard stop, 3-month backtest (Nov 2025 - Feb 2026)
+    "TOTAL_TRADES": 544,        # ~8.8 trades/day over 62 trading days
+    "WIN_RATE": 0.086,          # 8.6% (tight stop, high R:R)
+    "TOTAL_PNL": 189071.0,      # $189,071 total P&L
+    "AVG_TRADE_PNL": 347.56,    # $189,071 / 544 trades
+    "MAX_DRAWDOWN": -1721.0,    # $1,721 max drawdown
+    "PROFIT_FACTOR": 9.40,
+    "TRADING_DAYS": 62,
+    "AVG_DAILY_PNL": 3050.0     # $3,050/day
 }
 
 # =============================================================================
@@ -136,9 +137,10 @@ class MNQ1MinBot:
     MNQ 1min Live Trading Bot using best performing strategy
     """
 
-    def __init__(self, api: TastytradeAPI, symbol: str = 'MNQ'):
+    def __init__(self, api: TastytradeAPI, symbol: str = 'MNQ', timeframe: str = '2min'):
         self.api = api
         self.symbol = symbol
+        self.timeframe = timeframe
 
         # Strategy state
         self.position = 0
@@ -187,16 +189,20 @@ class MNQ1MinBot:
         # Pre-load historical data for immediate trading
         self.preload_historical_data()
 
-        self.logger.info("🚀 MNQ 1min Live Trading Bot initialized")
-        self.logger.info(f"📊 Strategy: EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']}, Stoch {STRATEGY_PARAMS['STOCH_LO']}/{STRATEGY_PARAMS['STOCH_HI']}")
-        self.logger.info(f"⚙️  Risk: {RISK_PARAMS['CONTRACTS']} contracts, Max Loss: ${RISK_PARAMS['MAX_LOSS_TRADE']}")
+        # Set polling interval based on timeframe
+        tf_seconds = {'1min': 30, '2min': 60, '5min': 150}
+        self.poll_interval = tf_seconds.get(self.timeframe, 60)
+
+        self.logger.info(f"MNQ {self.timeframe} Live Trading Bot initialized")
+        self.logger.info(f"Strategy: EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']}, Stoch {STRATEGY_PARAMS['STOCH_LO']}/{STRATEGY_PARAMS['STOCH_HI']}, Hard Stop ${RISK_PARAMS['HARD_STOP_DOLLARS']}")
+        self.logger.info(f"Risk: {RISK_PARAMS['CONTRACTS']} contract, Max Loss/Trade: ${RISK_PARAMS['MAX_LOSS_TRADE']}, Max Loss/Day: ${RISK_PARAMS['MAX_LOSS_DAY']}")
 
     def preload_historical_data(self):
         """Pre-load historical bars from CSV data for accurate indicator warm-up"""
         self.logger.info("📊 Pre-loading historical price data...")
 
         # Try to load real historical data from CSV files
-        csv_path = os.path.join(PROJECT_DIR, 'data', f'{self.symbol.lower()}_1min.csv')
+        csv_path = os.path.join(PROJECT_DIR, 'data', f'{self.symbol.lower()}_{self.timeframe}.csv')
         loaded_from_csv = False
 
         if os.path.exists(csv_path):
@@ -646,8 +652,8 @@ class MNQ1MinBot:
 
     def run_trading_loop(self, max_trades: int = 0):
         """Main trading loop"""
-        self.logger.info("🎯 Starting MNQ 1min live trading loop...")
-        self.logger.info("📊 Best performing strategy: $213,773 backtest P&L, 55% win rate")
+        self.logger.info(f"Starting MNQ {self.timeframe} live trading loop...")
+        self.logger.info(f"Strategy: $30 hard stop, 1.8 R:R, EMA 21/55 | Backtest PF: 9.40")
 
         trade_count = 0
 
@@ -697,8 +703,8 @@ class MNQ1MinBot:
                     if self.check_exit_signals(indicators, current_price):
                         self.execute_exit(current_price)
 
-                # Wait before next iteration (0.5 seconds for high-frequency monitoring)
-                time.sleep(0.5)
+                # Wait before next iteration based on timeframe
+                time.sleep(self.poll_interval)
 
             except Exception as e:
                 self.logger.error(f"Error in trading loop: {e}")
@@ -745,6 +751,7 @@ def main():
     parser.add_argument('--demo', action='store_true', default=True, help='Use demo account (default: True)')
     parser.add_argument('--live', action='store_true', help='Use live account (overrides demo)')
     parser.add_argument('--max-trades', type=int, default=5, help='Maximum trades to take (default: 5)')
+    parser.add_argument('--timeframe', default='2min', choices=['1min', '2min', '5min'], help='Bar timeframe (default: 2min)')
     parser.add_argument('--symbol', default='MNQ', help='Symbol to trade (default: MNQ)')
 
     args = parser.parse_args()
@@ -764,11 +771,11 @@ def main():
     # Determine account type
     is_demo = args.demo and not args.live
 
-    logger.info("🚀 Starting MNQ 1min Live Trading Bot")
-    logger.info(f"🎯 Account: {'DEMO' if is_demo else 'LIVE'}")
-    logger.info(f"📊 Symbol: {args.symbol}")
-    logger.info(f"⚙️  Max Trades: {args.max_trades}")
-    logger.info(f"💎 Strategy: Best performer - $213,773 backtest P&L, 55% win rate")
+    logger.info(f"Starting MNQ {args.timeframe} Live Trading Bot")
+    logger.info(f"Account: {'DEMO' if is_demo else 'LIVE'}")
+    logger.info(f"Symbol: {args.symbol} | Timeframe: {args.timeframe}")
+    logger.info(f"Max Trades: {args.max_trades} | Hard Stop: ${RISK_PARAMS['HARD_STOP_DOLLARS']}")
+    logger.info(f"Backtest: $189K P&L, 9.40 PF, $1.7K max DD (2min, $30 stop, 3mo)")
 
     try:
         # Initialize Webull API
@@ -776,7 +783,7 @@ def main():
         logger.info("✅ Tastytrade API connected successfully")
 
         # Initialize trading bot
-        bot = MNQ1MinBot(api, args.symbol)
+        bot = MNQ1MinBot(api, args.symbol, args.timeframe)
 
         # Get account balance
         balance = bot.api.get_account_balance()
