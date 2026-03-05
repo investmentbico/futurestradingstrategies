@@ -65,7 +65,7 @@ except ImportError:
 
 STRATEGY_PARAMS = {
     "EMA_FAST": 21, "EMA_SLOW": 55, "STOCH_K": 9, "STOCH_D": 3, "STOCH_SMT": 2,
-    "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 2.0, "TP_RR": 1.8,
+    "ATR_LEN": 9, "STOCH_LO": 25, "STOCH_HI": 75, "SL_ATR_MULT": 2.0, "TP_RR": 1.5,
     "TRAIL_ATR_MULT": 0.7, "BE_POINTS": 3.0
 }
 
@@ -653,7 +653,7 @@ class MNQ1MinBot:
     def run_trading_loop(self, max_trades: int = 0):
         """Main trading loop"""
         self.logger.info(f"Starting MNQ {self.timeframe} live trading loop...")
-        self.logger.info(f"Strategy: $30 hard stop, 1.8 R:R, EMA 21/55 | Backtest PF: 9.40")
+        self.logger.info(f"Strategy: ${RISK_PARAMS['HARD_STOP_DOLLARS']} hard stop, {STRATEGY_PARAMS['TP_RR']} R:R, EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']} | Backtest PF: 5.30")
 
         trade_count = 0
         loop_count = 0
