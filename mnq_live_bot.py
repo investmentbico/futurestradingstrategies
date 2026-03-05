@@ -26,6 +26,12 @@ import time
 import logging
 import argparse
 from datetime import datetime, timedelta
+try:
+    import zoneinfo
+    ET = zoneinfo.ZoneInfo("America/New_York")
+except ImportError:
+    import pytz
+    ET = pytz.timezone("America/New_York")
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Any
@@ -661,6 +667,19 @@ class MNQ1MinBot:
         while self.running and (max_trades == 0 or trade_count < max_trades):
             try:
                 loop_count += 1
+
+                # Trading hours check: 9:45 AM - 4:00 PM ET
+                now_et = datetime.now(ET)
+                market_open = now_et.replace(hour=9, minute=45, second=0, microsecond=0)
+                market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                if now_et < market_open:
+                    wait_secs = (market_open - now_et).total_seconds()
+                    self.logger.info(f"⏰ Market opens at 9:45 AM ET, waiting {int(wait_secs)}s...")
+                    time.sleep(min(wait_secs, 60))
+                    continue
+                if now_et >= market_close:
+                    self.logger.info("🔔 Market closed (4:00 PM ET) - ending session")
+                    break
 
                 # Reset daily stats if needed (silent)
                 self.reset_daily_stats()
