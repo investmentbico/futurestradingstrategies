@@ -656,9 +656,12 @@ class MNQ1MinBot:
         self.logger.info(f"Strategy: $30 hard stop, 1.8 R:R, EMA 21/55 | Backtest PF: 9.40")
 
         trade_count = 0
+        loop_count = 0
 
         while self.running and (max_trades == 0 or trade_count < max_trades):
             try:
+                loop_count += 1
+
                 # Reset daily stats if needed (silent)
                 self.reset_daily_stats()
 
@@ -687,6 +690,16 @@ class MNQ1MinBot:
 
                 # Calculate indicators (silent)
                 indicators = self.calculate_indicators()
+
+                # Periodic status log every 5 iterations
+                if loop_count % 5 == 1 and indicators:
+                    self.logger.info(
+                        f"[Poll #{loop_count}] Price=${current_price:.2f} | "
+                        f"EMA_fast={indicators.get('ema_fast', 0):.2f} EMA_slow={indicators.get('ema_slow', 0):.2f} | "
+                        f"StochD={indicators.get('stoch_d', 0):.2f} | ATR={indicators.get('atr', 0):.4f} | "
+                        f"Trend={'UP' if indicators.get('uptrend') else 'DOWN' if indicators.get('downtrend') else 'FLAT'} | "
+                        f"Pos={self.position} | Trades={trade_count}/{max_trades}"
+                    )
 
                 # Check for entry signals (only log when signals occur)
                 if self.position == 0 and len(self.price_data) >= 5:
