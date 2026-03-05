@@ -55,4 +55,7 @@ backtest_results_*.png
 
 # Trading
 orders.json
-positions.jsonmgc_diamante
+positions.json
+
+# Compiled binaries
+mgc_diamante
