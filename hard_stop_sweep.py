@@ -271,7 +271,7 @@ def main():
     print("  Strategy: EMA 21/55 | Stoch 25/75 | ATR 9 | SL 2.0 ATR | TP 1.8 RR")
     print("=" * 90)
 
-    hard_stops = [30, 50, 60, 75, 100, 130, 200]
+    hard_stops = [100, 150, 200, 300, 400, 500]
     results = []
 
     for hs in hard_stops:
