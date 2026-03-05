@@ -591,9 +591,10 @@ def main():
     bot = TradersPostBot(
         tp_client=tp,
         contracts=args.contracts,
-        hard_stop=25.0,
-        max_daily_loss=225.0,
+        hard_stop=20.0,
+        max_daily_loss=1000.0,
         max_trades=int(os.getenv('MAX_TRADES_PER_SESSION', '10')),
+        point_value=20.0,
     )
 
     # Signal handler
@@ -607,9 +608,13 @@ def main():
     logger.info("TRADERSPOST MNQ TRADING BOT")
     logger.info(f"Ticker: {tp.ticker}")
     logger.info(f"Contracts: {args.contracts}")
+    logger.info(f"Hard Stop: ${bot.hard_stop:.0f} | Max Daily Loss: ${bot.max_daily_loss:.0f}")
     logger.info(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE SIGNALS'}")
     logger.info(f"Strategy: EMA {STRATEGY['EMA_FAST']}/{STRATEGY['EMA_SLOW']}, "
-               f"Stoch {STRATEGY['STOCH_LO']}/{STRATEGY['STOCH_HI']}")
+               f"Stoch {STRATEGY['STOCH_K']}/{STRATEGY['STOCH_D']} "
+               f"({STRATEGY['STOCH_LO']}/{STRATEGY['STOCH_HI']}), "
+               f"ATR {STRATEGY['ATR_LEN']}, "
+               f"SL {STRATEGY['SL_ATR_MULT']}x, TP {STRATEGY['TP_RR']}R")
     logger.info("=" * 60)
 
     if args.csv:
