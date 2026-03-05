@@ -9,6 +9,7 @@ Usage:
   2. Run: python test_rithmic_connection.py
 
 This will:
+  - Try multiple gateway URLs to find a working one
   - Connect to Rithmic via your Apex credentials
   - List available accounts
   - Get the front-month MNQ contract
@@ -45,7 +46,18 @@ async def test_connection():
     user = os.getenv('RITHMIC_USER')
     password = os.getenv('RITHMIC_PASSWORD')
     system_name = os.getenv('RITHMIC_SYSTEM_NAME', 'Apex')
-    gateway_url = os.getenv('RITHMIC_GATEWAY_URL', 'rituz01000.rithmic.com:443')
+    gateway_url = os.getenv('RITHMIC_GATEWAY_URL', 'rituz00100.rithmic.com:443')
+
+    # Known Rithmic gateway URLs to try if the configured one fails
+    gateway_candidates = [
+        gateway_url,
+        'rituz00100.rithmic.com:443',   # Rithmic Test
+        'rituz00100.rithmic.com:65000',  # Rithmic Test alt port
+        'rituz01000.rithmic.com:443',    # Production candidate
+    ]
+    # Deduplicate while preserving order
+    seen = set()
+    gateway_candidates = [g for g in gateway_candidates if not (g in seen or seen.add(g))]
 
     if not user or not password or user == 'your_rithmic_username':
         logger.error("Missing Rithmic credentials. Set RITHMIC_USER and RITHMIC_PASSWORD in .env")
@@ -57,46 +69,81 @@ async def test_connection():
     logger.info("=" * 60)
     logger.info(f"User: {user}")
     logger.info(f"System: {system_name}")
-    logger.info(f"Gateway: {gateway_url}")
+    logger.info(f"Gateways to try: {gateway_candidates}")
     logger.info("")
 
-    client = RithmicClient(
-        user=user,
-        password=password,
-        system_name=system_name,
-        app_name="MNQ_Trading_Bot",
-        app_version="1.0",
-        url=gateway_url,
-    )
+    # Step 1: Try gateway URLs until one works
+    logger.info("[1/5] Finding working gateway...")
+    client = None
+    connected_url = None
+
+    for url in gateway_candidates:
+        logger.info(f"  Trying gateway: {url}")
+        test_client = RithmicClient(
+            user=user,
+            password=password,
+            system_name=system_name,
+            app_name="MNQ_Trading_Bot",
+            app_version="1.0",
+            url=url,
+        )
+        try:
+            await test_client.connect(plants=[
+                SysInfraType.TICKER_PLANT,
+                SysInfraType.ORDER_PLANT,
+            ])
+            client = test_client
+            connected_url = url
+            logger.info(f"  Connected successfully via {url}!")
+            break
+        except Exception as e:
+            err_msg = str(e)
+            if 'nodename' in err_msg or 'getaddrinfo' in err_msg:
+                logger.warning(f"    DNS resolution failed for {url}")
+            elif 'system_name' in err_msg.lower():
+                logger.warning(f"    System name error on {url}: {e}")
+                logger.info(f"    The gateway works but '{system_name}' is not available on it.")
+            else:
+                logger.warning(f"    Failed: {e}")
+            try:
+                await test_client.disconnect()
+            except Exception:
+                pass
+
+    if client is None:
+        logger.error("Could not connect to any Rithmic gateway.")
+        logger.info("")
+        logger.info("Troubleshooting:")
+        logger.info("  1. Verify username/password from Apex dashboard")
+        logger.info("  2. System name should be 'Apex' (not 'Rithmic Paper Trading')")
+        logger.info("  3. You may need the production gateway URL from Rithmic")
+        logger.info("     Apply at: https://www.rithmic.com/api-request")
+        logger.info("     Or email: rapi@rithmic.com")
+        logger.info("  4. Make sure no other Rithmic session is active")
+        return False
 
     try:
-        # Step 1: Connect to ticker and order plants
-        logger.info("[1/5] Connecting to Rithmic...")
-        await client.connect(plants=[
-            SysInfraType.TICKER_PLANT,
-            SysInfraType.ORDER_PLANT,
-        ])
-        logger.info("  Connected successfully!")
-
         # Step 2: List accounts
         logger.info("[2/5] Listing accounts...")
-        accounts = client.accounts
-        if accounts:
-            for acc in accounts:
-                logger.info(f"  Account: {acc}")
-        else:
-            logger.warning("  No accounts found. Check your Apex credentials.")
+        accounts = []
+        try:
+            accounts = client.accounts
+            if accounts:
+                for acc in accounts:
+                    logger.info(f"  Account: {acc}")
+            else:
+                logger.warning("  No accounts found. Check your Apex credentials.")
+        except Exception as e:
+            logger.warning(f"  Could not list accounts: {e}")
 
         # Step 3: Get front-month MNQ contract
         logger.info("[3/5] Looking up front-month MNQ contract...")
-        ticker_plant = client.plants.get(SysInfraType.TICKER_PLANT)
-        if ticker_plant:
-            try:
-                contract = await ticker_plant.get_front_month_contract("MNQ", "CME")
-                logger.info(f"  Front-month MNQ: {contract}")
-            except Exception as e:
-                logger.warning(f"  Could not get front-month contract: {e}")
-                logger.info("  Will try subscribing to MNQH6 (Mar 2026) directly...")
+        try:
+            contract = await client.get_front_month_contract("MNQ", "CME")
+            logger.info(f"  Front-month MNQ: {contract}")
+        except Exception as e:
+            logger.warning(f"  Could not get front-month contract: {e}")
+            logger.info("  Will try subscribing to MNQH6 (Mar 2026) directly...")
 
         # Step 4: Stream a few quotes
         logger.info("[4/5] Streaming MNQ quotes (5 seconds)...")
@@ -109,33 +156,30 @@ async def test_connection():
 
         client.on_tick += on_tick
 
-        # Try front-month contract symbol
-        mnq_symbol = "MNQ"
         try:
-            await ticker_plant.subscribe_to_market_data(
-                mnq_symbol, "CME", DataType.LAST_TRADE | DataType.BBO
+            await client.subscribe_to_market_data(
+                "MNQ", "CME", DataType.LAST_TRADE | DataType.BBO
             )
         except Exception as e:
-            logger.warning(f"  Could not subscribe to {mnq_symbol}: {e}")
+            logger.warning(f"  Could not subscribe to MNQ: {e}")
 
         await asyncio.sleep(5)
         logger.info(f"  Received {len(quotes_received)} quotes in 5 seconds")
 
         # Step 5: Check order routing
         logger.info("[5/5] Checking order routing...")
-        order_plant = client.plants.get(SysInfraType.ORDER_PLANT)
-        if order_plant:
-            try:
-                routes = order_plant.trade_routes
-                logger.info(f"  Trade routes available: {len(routes)}")
-                for route in routes[:5]:
-                    logger.info(f"    {route}")
-            except Exception as e:
-                logger.warning(f"  Could not get trade routes: {e}")
+        try:
+            routes = client.plants["order"].trade_routes
+            logger.info(f"  Trade routes available: {len(routes)}")
+            for route in routes[:5]:
+                logger.info(f"    {route}")
+        except Exception as e:
+            logger.warning(f"  Could not get trade routes: {e}")
 
         logger.info("")
         logger.info("=" * 60)
         logger.info("CONNECTION TEST COMPLETE")
+        logger.info(f"Working gateway: {connected_url}")
         logger.info("=" * 60)
 
         if accounts and len(quotes_received) > 0:
@@ -152,13 +196,7 @@ async def test_connection():
             return False
 
     except Exception as e:
-        logger.error(f"Connection failed: {e}")
-        logger.info("")
-        logger.info("Troubleshooting:")
-        logger.info("  1. Verify username/password from Apex dashboard")
-        logger.info("  2. System name should be 'Apex' (not 'Rithmic Paper Trading')")
-        logger.info("  3. Try a different gateway URL")
-        logger.info("  4. Make sure no other Rithmic session is active")
+        logger.error(f"Error during testing: {e}")
         return False
 
     finally:
