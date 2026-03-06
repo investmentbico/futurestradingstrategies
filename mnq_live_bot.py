@@ -32,6 +32,7 @@ import numpy as np
 from typing import Dict, List, Optional, Any
 import threading
 import signal
+import requests
 
 # Load environment variables from .env file
 try:
@@ -78,13 +79,16 @@ RISK_PARAMS = {
     "STARTING_EQUITY": 100000.0
 }
 
-# Trading window (ET) - backtest showed all profits come from 9-11 AM
+# Trading window (ET) - NY session hours
 TRADING_WINDOW = {
     "START_HOUR": 9,
-    "START_MINUTE": 0,
-    "END_HOUR": 11,
-    "END_MINUTE": 0,
+    "START_MINUTE": 29,
+    "END_HOUR": 15,
+    "END_MINUTE": 45,
 }
+
+# TradersPost webhook for order execution
+TRADERSPOST_WEBHOOK_URL = "https://webhooks.traderspost.io/trading/webhook/a8c040ef-f8e2-40f6-96d1-8088d43ca4dd/41f87a00ae87dc679f126cd02d3810b6"
 
 # =============================================================================
 # BACKTEST PERFORMANCE METRICS FOR COMPARISON
@@ -434,6 +438,28 @@ class MNQ1MinBot:
 
         return False
 
+    def send_webhook(self, action: str, quantity: int = None):
+        """Send order to TradersPost webhook"""
+        if quantity is None:
+            quantity = RISK_PARAMS["CONTRACTS"]
+        payload = {
+            "ticker": self.symbol,
+            "action": action,
+            "quantity": quantity
+        }
+        try:
+            resp = requests.post(
+                TRADERSPOST_WEBHOOK_URL,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10
+            )
+            self.logger.info(f"🔗 Webhook {action.upper()}: {resp.status_code} - {resp.text}")
+            return resp.ok
+        except Exception as e:
+            self.logger.error(f"Webhook failed for {action}: {e}")
+            return False
+
     def execute_entry(self, signal: str, current_price: float, atr: float):
         """Execute entry order"""
         try:
@@ -450,7 +476,8 @@ class MNQ1MinBot:
                 # Calculate hard stop price
                 hard_stop_price = current_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
 
-                # Place market order
+                # Send webhook + place market order
+                self.send_webhook("buy", quantity)
                 order_result = self.api.place_market_order(self.symbol, 'BUY', quantity)
                 self.logger.info(f"📈 LONG ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
@@ -466,7 +493,8 @@ class MNQ1MinBot:
                 # Calculate hard stop price
                 hard_stop_price = current_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
 
-                # Place market order
+                # Send webhook + place market order
+                self.send_webhook("sell", quantity)
                 order_result = self.api.place_market_order(self.symbol, 'SELL', quantity)
                 self.logger.info(f"📉 SHORT ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
@@ -479,12 +507,14 @@ class MNQ1MinBot:
         """Execute exit order"""
         try:
             if self.position > 0:
-                # Exit long position
+                # Exit long position - sell to close
+                self.send_webhook("sell", abs(self.position))
                 order_result = self.api.close_position(self.symbol)
                 pnl = (current_price - self.entry_price) * abs(self.position) * 20  # MNQ point value
                 self.logger.info(f"📈 LONG EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
             else:
-                # Exit short position
+                # Exit short position - buy to close
+                self.send_webhook("buy", abs(self.position))
                 order_result = self.api.close_position(self.symbol)
                 pnl = (self.entry_price - current_price) * abs(self.position) * 20  # MNQ point value
                 self.logger.info(f"📉 SHORT EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
