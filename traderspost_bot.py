@@ -172,8 +172,9 @@ class TradersPostBot:
             'price': c[-1],
         }
 
-    # ── Signal Logic ─────────────────────────────────────────────
+    # ── Signal Logic (ONE ORDER AT A TIME — no stacking, no hedging) ──
     def check_entry(self, ind):
+        # STRICT: only enter when completely flat — no multiple orders
         if ind is None or self.position != 0:
             return None
         if self.daily_trades >= self.max_trades or self.emergency_stop:
@@ -234,6 +235,12 @@ class TradersPostBot:
 
     # ── Execution via TradersPost ────────────────────────────────
     def enter(self, direction, price, atr):
+        # Safety: cancel any stale orders before opening new position
+        if self.position != 0:
+            logger.warning("BLOCKED: position already open — no hedge/stack allowed")
+            return False
+        self.tp.send_cancel()
+
         qty = self.contracts
         mult = STRATEGY["SL_ATR_MULT"]
         rr = STRATEGY["TP_RR"]
@@ -363,11 +370,12 @@ class TradersPostBot:
                 self.exit(price)
                 return
 
-        # Check entries
+        # Check entries — only when fully flat (one order at a time)
         if self.position == 0 and ind:
             entry_signal = self.check_entry(ind)
             if entry_signal:
                 self.enter(entry_signal, price, ind['atr'])
+            return  # never enter and exit on the same bar
 
     # ── State for Dashboard ──────────────────────────────────────
     def _write_state(self):
@@ -591,10 +599,10 @@ def main():
     bot = TradersPostBot(
         tp_client=tp,
         contracts=args.contracts,
-        hard_stop=20.0,
-        max_daily_loss=1000.0,
+        hard_stop=float(os.getenv('HARD_STOP_DOLLARS', '20')),
+        max_daily_loss=float(os.getenv('MAX_DAILY_LOSS', '836')),
         max_trades=int(os.getenv('MAX_TRADES_PER_SESSION', '10')),
-        point_value=20.0,
+        point_value=2.0,  # MNQ = $2/point (NOT $20 — that's NQ)
     )
 
     # Signal handler
