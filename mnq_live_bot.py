@@ -702,7 +702,7 @@ class MNQ1MinBot:
     def run_trading_loop(self, max_trades: int = 0):
         """Main trading loop"""
         self.logger.info("🎯 Starting MNQ 1min live trading loop...")
-        self.logger.info("📊 Best performing strategy: $213,773 backtest P&L, 55% win rate")
+        self.logger.info("📊 5 contracts | $50 stop | $13,310 target | PF 8.40 | 0.5s polling")
 
         trade_count = 0
 
@@ -826,7 +826,7 @@ def main():
     logger.info(f"🎯 Account: {'DEMO' if is_demo else 'LIVE'}")
     logger.info(f"📊 Symbol: {args.symbol}")
     logger.info(f"⚙️  Max Trades: {args.max_trades}")
-    logger.info(f"💎 Strategy: Best performer - $213,773 backtest P&L, 55% win rate")
+    logger.info(f"💎 Strategy: 5 contracts, $50 stop, $13,310 target, PF 8.40, $1,708 avg trade")
 
     try:
         # Initialize Webull API
