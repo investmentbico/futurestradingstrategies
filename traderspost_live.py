@@ -336,7 +336,9 @@ class TradersPostLiveBot:
 
     # ── Indicators ────────────────────────────────────────────────
     def get_indicators(self):
-        if len(self.bars) < STRATEGY["EMA_SLOW"] + 5:
+        # Need at least 20 bars for basic indicators — start trading ASAP
+        min_bars = max(STRATEGY["STOCH_K"] + STRATEGY["STOCH_D"] + 2, 20)
+        if len(self.bars) < min_bars:
             return None
         c = np.array([b['close'] for b in self.bars])
         h = np.array([b['high'] for b in self.bars])
@@ -784,7 +786,7 @@ class TradersPostLiveBot:
                         if self.check_exit(ind):
                             self.exit()
                     # Check entries on every tick too (fast re-entry)
-                    elif self.position == 0 and len(self.bars) >= STRATEGY["EMA_SLOW"] + 5:
+                    elif self.position == 0 and len(self.bars) >= 20:
                         ind = self.get_indicators()
                         entry = self.check_entry(ind)
                         if entry and ind:
