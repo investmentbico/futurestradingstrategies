@@ -199,9 +199,30 @@ class MNQ1MinBot:
         tf_seconds = {'1min': 30, '2min': 60, '5min': 150}
         self.poll_interval = tf_seconds.get(self.timeframe, 60)
 
+        # Sync position with broker on startup
+        self.sync_broker_position()
+
         self.logger.info(f"MNQ {self.timeframe} Live Trading Bot initialized")
         self.logger.info(f"Strategy: EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']}, Stoch {STRATEGY_PARAMS['STOCH_LO']}/{STRATEGY_PARAMS['STOCH_HI']}, Hard Stop ${RISK_PARAMS['HARD_STOP_DOLLARS']}")
         self.logger.info(f"Risk: {RISK_PARAMS['CONTRACTS']} contract, Max Loss/Trade: ${RISK_PARAMS['MAX_LOSS_TRADE']}, Max Loss/Day: ${RISK_PARAMS['MAX_LOSS_DAY']}")
+
+    def sync_broker_position(self):
+        """Check broker for existing position on startup — refuse to run if position exists"""
+        try:
+            positions = self.api.get_positions()
+            for pos in positions:
+                sym = pos.get('symbol', '') or pos.get('instrument', {}).get('symbol', '')
+                qty = int(pos.get('quantity', 0))
+                if qty != 0 and ('MNQ' in sym.upper() or 'NQ' in sym.upper()):
+                    self.logger.warning(f"⚠️  Existing broker position found: {qty} {sym}")
+                    self.logger.warning("⚠️  Bot will track this position for exit management")
+                    self.position = qty
+                    # We don't know entry price, use 0 — bot will manage exit via hard stop
+                    self.entry_price = 0
+                    return
+            self.logger.info("✅ No existing positions — clean start")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Could not sync positions: {e}")
 
     def preload_historical_data(self):
         """Pre-load historical bars from CSV data for accurate indicator warm-up"""
@@ -721,7 +742,20 @@ class MNQ1MinBot:
                     )
 
                 # Check for entry signals (only log when signals occur)
+                # No hedging: only enter if bot has no position AND broker confirms flat
                 if self.position == 0 and len(self.price_data) >= 5:
+                    # Double-check broker has no open position before entering
+                    broker_pos = self.api.get_positions()
+                    has_open = any(
+                        int(p.get('quantity', 0)) != 0
+                        for p in broker_pos
+                        if 'MNQ' in (p.get('symbol', '') or p.get('instrument', {}).get('symbol', '')).upper()
+                    )
+                    if has_open:
+                        if loop_count % 5 == 1:
+                            self.logger.warning("⚠️  Broker has open MNQ position — skipping new entry (no hedging)")
+                        continue
+
                     entry_signal = self.check_entry_signals(indicators, current_price)
                     if entry_signal and indicators.get('atr', 0) > 0:
                         self.logger.info(f"🎯 SIGNAL DETECTED: {entry_signal.upper()} at ${current_price:.2f}")

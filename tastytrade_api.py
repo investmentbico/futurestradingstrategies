@@ -185,19 +185,24 @@ class TastytradeAPI:
         }
 
     def get_futures_symbol(self, product_code: str = "MNQ") -> Optional[str]:
-        """Get the active front-month futures contract symbol (e.g. /MNQH6)"""
+        """Get the active front-month futures contract symbol (e.g. /MNQH6).
+        Picks the nearest non-closing-only contract by expiration date."""
         try:
             url = f"{self.base_url}/instruments/futures"
             params = {'product-code': product_code}
             response = requests.get(url, headers=self._get_headers(), params=params)
             if response.status_code == 200:
                 items = response.json().get('data', {}).get('items', [])
-                # Find the first active contract that isn't closing-only
-                for item in items:
-                    if not item.get('is-closing-only', True):
-                        symbol = item.get('symbol')
-                        if symbol:
-                            return symbol
+                # Filter to active contracts and sort by expiration (nearest first)
+                active = [
+                    item for item in items
+                    if not item.get('is-closing-only', True) and item.get('symbol')
+                ]
+                active.sort(key=lambda x: x.get('expiration-date', '9999-12-31'))
+                if active:
+                    sym = active[0]['symbol']
+                    print(f"  Resolved {product_code} -> {sym} (expires {active[0].get('expiration-date')})")
+                    return sym
                 # Fallback to first contract
                 if items:
                     return items[0].get('symbol')
@@ -326,10 +331,15 @@ class TastytradeAPI:
             order_url = f"{self.base_url}/accounts/{self.account_number}/orders"
 
             # Tastytrade futures order format
-            # Side mapping: BUY -> 'Buy to Open', SELL -> 'Sell to Close' (or 'Sell to Open' for shorts)
-            if side.upper() == 'BUY':
+            # BUY = open long, SELL = open short, BUY_CLOSE = cover short, SELL_CLOSE = close long
+            side_upper = side.upper()
+            if side_upper == 'BUY':
                 action = 'Buy to Open'
-            elif side.upper() == 'SELL':
+            elif side_upper == 'SELL':
+                action = 'Sell to Open'
+            elif side_upper == 'BUY_CLOSE':
+                action = 'Buy to Close'
+            elif side_upper == 'SELL_CLOSE':
                 action = 'Sell to Close'
             else:
                 action = side
