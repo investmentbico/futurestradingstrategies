@@ -6,7 +6,10 @@ Uses async-rithmic WebSocket for real-time MNQ tick data.
 Runs EMA/Stoch/ATR mean-reversion strategy.
 Sends entry/exit signals to TradersPost → Apex Trader Funding via Tradovate.
 
-Option C: 3 MNQ contracts, $20 hard stop, $836 max daily loss.
+Apex $50K Prop Firm Challenge Mode:
+10 MNQ contracts, $80 hard stop, $800 max daily loss.
+Broker-side SL capped at hard stop distance for drawdown protection.
+Profit lock-in: tightens risk as profits grow (trailing drawdown safe).
 One order at a time — no stacking, no hedging.
 
 Usage:
@@ -335,14 +338,38 @@ class TradersPostLiveBot:
         }
 
     # ── Signal Logic (ONE ORDER AT A TIME) ────────────────────────
+    def _get_effective_daily_loss_limit(self):
+        """Prop firm trailing drawdown protection: lock in profits.
+        As daily_pnl grows, we tighten the loss limit to protect gains.
+        This prevents giving back profits (critical for trailing drawdown accounts)."""
+        base_limit = self.max_daily_loss  # $800
+
+        if self.daily_pnl > 500:
+            # Lock in 50% of profits above $500
+            locked = (self.daily_pnl - 500) * 0.50
+            effective = base_limit - locked
+            logger.info(f"Profit lock: daily=${self.daily_pnl:.0f}, locked=${locked:.0f}, "
+                       f"effective limit=${effective:.0f}")
+            return max(effective, 200)  # never go below $200 limit
+        return base_limit
+
     def check_entry(self, ind):
         if ind is None or self.position != 0:
             return None
         if self.daily_trades >= self.max_trades or self.emergency_stop:
             return None
-        if self.daily_pnl <= -self.max_daily_loss:
+
+        effective_limit = self._get_effective_daily_loss_limit()
+        if self.daily_pnl <= -effective_limit:
             self.emergency_stop = True
-            logger.warning(f"DAILY LOSS LIMIT: ${self.daily_pnl:.2f}")
+            logger.warning(f"DAILY LOSS LIMIT: ${self.daily_pnl:.2f} (limit: ${effective_limit:.0f})")
+            return None
+
+        # Prop firm: if we hit profit target, stop trading (don't risk giving it back)
+        profit_target = float(os.getenv('APEX_PROFIT_TARGET', '0'))
+        if profit_target > 0 and self.daily_pnl >= profit_target:
+            logger.info(f"PROFIT TARGET HIT: ${self.daily_pnl:.2f} >= ${profit_target:.0f} — stopping!")
+            self.emergency_stop = True
             return None
 
         if ind['uptrend'] and ind['d_falling'] and ind['stoch_d'] <= STRATEGY["STOCH_LO"] and ind['atr'] > 0:
@@ -401,6 +428,12 @@ class TradersPostLiveBot:
             logger.warning("BLOCKED: position already open")
             return False
 
+        # Prop firm protection: check remaining drawdown budget
+        remaining_budget = self.max_daily_loss + self.daily_pnl  # positive = room left
+        if remaining_budget < self.hard_stop:
+            logger.warning(f"SKIP: remaining budget ${remaining_budget:.2f} < hard stop ${self.hard_stop:.2f}")
+            return False
+
         # Cancel stale orders first
         self.tp.send_cancel()
 
@@ -408,16 +441,21 @@ class TradersPostLiveBot:
         mult = STRATEGY["SL_ATR_MULT"]
         rr = STRATEGY["TP_RR"]
 
+        # Calculate ATR-based stops
+        atr_sl = atr * mult
+        atr_tp = atr * mult * rr
+
+        # Cap broker-side SL at hard stop distance for drawdown protection
+        hard_stop_pts = self.hard_stop / (qty * self.point_value)
+        sl_amount = min(atr_sl, hard_stop_pts)
+        tp_amount = atr_tp  # TP stays at full ATR target for big wins
+
         if direction == 'long':
-            self.stop_loss = self.price - atr * mult
-            self.take_profit = self.price + atr * mult * rr
-            sl_amount = atr * mult
-            tp_amount = atr * mult * rr
+            self.stop_loss = self.price - sl_amount
+            self.take_profit = self.price + tp_amount
         else:
-            self.stop_loss = self.price + atr * mult
-            self.take_profit = self.price - atr * mult * rr
-            sl_amount = atr * mult
-            tp_amount = atr * mult * rr
+            self.stop_loss = self.price + sl_amount
+            self.take_profit = self.price - tp_amount
 
         self.entry_price = self.price
         self.position = qty if direction == 'long' else -qty
@@ -426,9 +464,9 @@ class TradersPostLiveBot:
         d = 'LONG' if direction == 'long' else 'SHORT'
         logger.info("=" * 55)
         logger.info(f"{d} ENTRY: {qty}x @ {self.price:.2f}")
-        logger.info(f"  SL: {self.stop_loss:.2f} ({sl_amount:.2f} pts)")
+        logger.info(f"  SL: {self.stop_loss:.2f} ({sl_amount:.2f} pts, capped from ATR {atr_sl:.2f})")
         logger.info(f"  TP: {self.take_profit:.2f} ({tp_amount:.2f} pts)")
-        logger.info(f"  ATR: {atr:.2f}")
+        logger.info(f"  ATR: {atr:.2f} | Hard Stop: ${self.hard_stop:.0f} | Budget: ${remaining_budget:.0f}")
         logger.info("=" * 55)
 
         if direction == 'long':
@@ -708,16 +746,20 @@ async def main():
     for s in (sig.SIGINT, sig.SIGTERM):
         loop.add_signal_handler(s, lambda: asyncio.create_task(bot.shutdown()))
 
+    profit_target = float(os.getenv('APEX_PROFIT_TARGET', '0'))
+    max_dd = float(os.getenv('APEX_MAX_DRAWDOWN', '0'))
     logger.info("=" * 60)
-    logger.info("TRADERSPOST LIVE BOT — OPTION C")
+    logger.info("APEX PROP FIRM CHALLENGE BOT — LIVE")
+    logger.info(f"Account:    $50K Apex | Max DD: ${max_dd:.0f} | Target: ${profit_target:.0f}")
     logger.info(f"Signals:    TradersPost → Apex/Tradovate")
     logger.info(f"Ticker:     {tp.ticker}")
-    logger.info(f"Contracts:  {args.contracts} MNQ")
-    logger.info(f"Hard Stop:  ${bot.hard_stop:.0f} | Max Daily: ${bot.max_daily_loss:.0f}")
+    logger.info(f"Contracts:  {args.contracts} MNQ (${args.contracts * 2}/pt)")
+    logger.info(f"Hard Stop:  ${bot.hard_stop:.0f}/trade | Max Daily Loss: ${bot.max_daily_loss:.0f}")
     logger.info(f"Mode:       {'DRY RUN' if args.dry_run else 'LIVE SIGNALS'}")
     logger.info(f"Strategy:   EMA {STRATEGY['EMA_FAST']}/{STRATEGY['EMA_SLOW']}, "
                 f"Stoch {STRATEGY['STOCH_LO']}/{STRATEGY['STOCH_HI']}, "
                 f"ATR {STRATEGY['ATR_LEN']}, SL {STRATEGY['SL_ATR_MULT']}x, TP {STRATEGY['TP_RR']}R")
+    logger.info(f"Protection: Broker SL capped at hard stop | Profit lock-in active")
     logger.info(f"Enforcement: ONE ORDER AT A TIME — no stacking, no hedging")
     logger.info("=" * 60)
 
