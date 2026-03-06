@@ -78,6 +78,14 @@ RISK_PARAMS = {
     "STARTING_EQUITY": 100000.0
 }
 
+# Trading window (ET) - backtest showed all profits come from 9-11 AM
+TRADING_WINDOW = {
+    "START_HOUR": 9,
+    "START_MINUTE": 0,
+    "END_HOUR": 11,
+    "END_MINUTE": 0,
+}
+
 # =============================================================================
 # BACKTEST PERFORMANCE METRICS FOR COMPARISON
 # =============================================================================
@@ -191,6 +199,7 @@ class MNQ1MinBot:
         self.logger.info("🚀 MNQ 1min Live Trading Bot initialized")
         self.logger.info(f"📊 Strategy: EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']}, Stoch {STRATEGY_PARAMS['STOCH_LO']}/{STRATEGY_PARAMS['STOCH_HI']}")
         self.logger.info(f"⚙️  Risk: {RISK_PARAMS['CONTRACTS']} contracts, Max Loss: ${RISK_PARAMS['MAX_LOSS_TRADE']}")
+        self.logger.info(f"🕐 Trading Window: {TRADING_WINDOW['START_HOUR']}:{TRADING_WINDOW['START_MINUTE']:02d} - {TRADING_WINDOW['END_HOUR']}:{TRADING_WINDOW['END_MINUTE']:02d} AM ET")
 
     def preload_historical_data(self):
         """Pre-load historical bars from CSV data for accurate indicator warm-up"""
@@ -502,6 +511,21 @@ class MNQ1MinBot:
         except Exception as e:
             self.logger.error(f"Failed to execute exit: {e}")
 
+    def is_in_trading_window(self) -> bool:
+        """Check if current time is within the 9:00-11:00 AM ET trading window"""
+        try:
+            import pytz
+            et = pytz.timezone('US/Eastern')
+            now_et = datetime.now(et)
+        except ImportError:
+            # Fallback: assume system is in ET
+            now_et = datetime.now()
+
+        current_minutes = now_et.hour * 60 + now_et.minute
+        start_minutes = TRADING_WINDOW["START_HOUR"] * 60 + TRADING_WINDOW["START_MINUTE"]
+        end_minutes = TRADING_WINDOW["END_HOUR"] * 60 + TRADING_WINDOW["END_MINUTE"]
+        return start_minutes <= current_minutes < end_minutes
+
     def check_risk_limits(self) -> bool:
         """Check if we should stop trading due to risk limits"""
         # Daily loss limit
@@ -683,8 +707,11 @@ class MNQ1MinBot:
                 # Calculate indicators (silent)
                 indicators = self.calculate_indicators()
 
-                # Check for entry signals (only log when signals occur)
-                if self.position == 0 and len(self.price_data) >= 5:
+                # Check trading window (9-11 AM ET) - only enter new trades in window
+                in_window = self.is_in_trading_window()
+
+                # Check for entry signals (only during trading window)
+                if self.position == 0 and len(self.price_data) >= 5 and in_window:
                     entry_signal = self.check_entry_signals(indicators, current_price)
                     if entry_signal and indicators.get('atr', 0) > 0:
                         self.logger.info(f"🎯 SIGNAL DETECTED: {entry_signal.upper()} at ${current_price:.2f}")
@@ -693,7 +720,7 @@ class MNQ1MinBot:
                         if self.position != 0:
                             trade_count += 1
 
-                # Check for exit signals
+                # Check for exit signals (always active - manage open positions regardless of window)
                 elif self.position != 0:
                     if self.check_exit_signals(indicators, current_price):
                         self.execute_exit(current_price)
