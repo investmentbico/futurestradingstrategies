@@ -269,22 +269,9 @@ class TastytradeAPI:
         except Exception as e:
             pass  # Silently handle Yahoo Finance failures
 
-        # Final fallback - use realistic mock price based on current market
-        # NQ/MNQ should be around current Nasdaq index level (~25,000 in 2026)
-        base_price = 25180.0  # Current market level
-        import random
-        import math
-        import time
-
-        # Add some realistic volatility
-        time_factor = time.time() / 60  # Change every minute
-        oscillation = math.sin(time_factor) * 50  # ±50 points
-        noise = random.gauss(0, 10)  # Small noise
-
-        mock_price = base_price + oscillation + noise
-        mock_price = max(24000, min(26000, mock_price))  # Reasonable bounds
-
-        return round(mock_price, 2)
+        # Final fallback - NO MOCK PRICES for live trading
+        # Return None so the bot knows price is unavailable
+        return None
 
     def get_market_data(self, symbol: str = "MNQ", days: int = 1) -> List[Dict]:
         """Get historical market data"""
@@ -411,10 +398,14 @@ class TastytradeAPI:
             return []  # Silently return empty list on failure
 
     def get_position(self, symbol: str = "MNQ") -> Optional[Dict]:
-        """Get position for specific symbol"""
+        """Get position for specific symbol (matches product code like MNQ in /MNQH6)"""
         positions = self.get_positions()
+        symbol_upper = symbol.upper()
         for pos in positions:
-            if pos.get('symbol') == symbol or pos.get('instrument', {}).get('symbol') == symbol:
+            pos_sym = (pos.get('symbol', '') or pos.get('instrument', {}).get('symbol', '')).upper()
+            qty = int(pos.get('quantity', 0))
+            # Match exact symbol or product code within contract symbol
+            if qty != 0 and (pos_sym == symbol_upper or symbol_upper in pos_sym):
                 return pos
         return None
 

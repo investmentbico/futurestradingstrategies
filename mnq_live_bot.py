@@ -207,7 +207,7 @@ class MNQ1MinBot:
         self.logger.info(f"Risk: {RISK_PARAMS['CONTRACTS']} contract, Max Loss/Trade: ${RISK_PARAMS['MAX_LOSS_TRADE']}, Max Loss/Day: ${RISK_PARAMS['MAX_LOSS_DAY']}")
 
     def sync_broker_position(self):
-        """Check broker for existing position on startup — refuse to run if position exists"""
+        """Check broker for existing position on startup — if found, close it before starting fresh"""
         try:
             positions = self.api.get_positions()
             for pos in positions:
@@ -215,10 +215,13 @@ class MNQ1MinBot:
                 qty = int(pos.get('quantity', 0))
                 if qty != 0 and ('MNQ' in sym.upper() or 'NQ' in sym.upper()):
                     self.logger.warning(f"⚠️  Existing broker position found: {qty} {sym}")
-                    self.logger.warning("⚠️  Bot will track this position for exit management")
-                    self.position = qty
-                    # We don't know entry price, use 0 — bot will manage exit via hard stop
-                    self.entry_price = 0
+                    self.logger.warning("⚠️  Closing existing position before starting fresh...")
+                    close_result = self.api.close_position(self.symbol)
+                    if close_result:
+                        self.logger.info("✅ Existing position closed — clean start")
+                    else:
+                        self.logger.error("❌ Failed to close existing position — bot will not trade until position is flat")
+                        self.position = qty  # Track it so bot won't enter new trades
                     return
             self.logger.info("✅ No existing positions — clean start")
         except Exception as e:
@@ -287,22 +290,11 @@ class MNQ1MinBot:
         self.emergency_stop = True
 
     def get_current_price(self) -> Optional[float]:
-        """Get current MNQ price from API"""
+        """Get current MNQ price from API — returns None if unavailable (never uses mock data)"""
         try:
-            # Get current price
             price = self.api.get_current_price(self.symbol)
             if price is not None and price > 0:
                 return price
-
-            # If API fails, use realistic mock price for testing
-            if not self.api.session_token:
-                mock_price = 25180.0 + (time.time() % 100) * 0.01  # Realistic current market level
-                return mock_price
-            else:
-                # API authenticated but no prices available - use mock with market-like movement
-                mock_price = 25180.0 + (time.time() % 100) * 0.01
-                return mock_price
-
             return None
         except Exception as e:
             self.logger.error(f"Failed to get current price: {e}")
@@ -458,11 +450,17 @@ class MNQ1MinBot:
         return False
 
     def execute_entry(self, signal: str, current_price: float, atr: float):
-        """Execute entry order"""
+        """Execute entry order — only sets position state AFTER broker confirms order"""
         try:
             quantity = RISK_PARAMS["CONTRACTS"]
 
             if signal == 'long':
+                # Place order FIRST, then update state only on success
+                order_result = self.api.place_market_order(self.symbol, 'BUY', quantity)
+                if not order_result:
+                    self.logger.error("❌ LONG order REJECTED/FAILED — not entering position")
+                    return
+
                 self.position = quantity
                 self.entry_price = current_price
                 self.stop_loss = current_price - (atr * STRATEGY_PARAMS["SL_ATR_MULT"])
@@ -470,15 +468,17 @@ class MNQ1MinBot:
                 self.trailing_stop = self.stop_loss
                 self.breakeven_triggered = False
 
-                # Calculate hard stop price
                 hard_stop_price = current_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
-
-                # Place market order
-                order_result = self.api.place_market_order(self.symbol, 'BUY', quantity)
                 self.logger.info(f"📈 LONG ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
 
             elif signal == 'short':
+                # Place order FIRST, then update state only on success
+                order_result = self.api.place_market_order(self.symbol, 'SELL', quantity)
+                if not order_result:
+                    self.logger.error("❌ SHORT order REJECTED/FAILED — not entering position")
+                    return
+
                 self.position = -quantity
                 self.entry_price = current_price
                 self.stop_loss = current_price + (atr * STRATEGY_PARAMS["SL_ATR_MULT"])
@@ -486,30 +486,28 @@ class MNQ1MinBot:
                 self.trailing_stop = self.stop_loss
                 self.breakeven_triggered = False
 
-                # Calculate hard stop price
                 hard_stop_price = current_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
-
-                # Place market order
-                order_result = self.api.place_market_order(self.symbol, 'SELL', quantity)
                 self.logger.info(f"📉 SHORT ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
 
         except Exception as e:
             self.logger.error(f"Failed to execute entry: {e}")
-            self.position = 0  # Reset position on error
+            # Do NOT reset position — if order was sent, check broker manually
 
     def execute_exit(self, current_price: float):
-        """Execute exit order"""
+        """Execute exit order — only resets position state AFTER broker confirms close"""
         try:
+            # Close position on broker first
+            order_result = self.api.close_position(self.symbol)
+            if not order_result:
+                self.logger.error("❌ EXIT order FAILED — position still OPEN on broker! Will retry next poll.")
+                return  # Do NOT reset position — keep trying to close
+
             if self.position > 0:
-                # Exit long position
-                order_result = self.api.close_position(self.symbol)
-                pnl = (current_price - self.entry_price) * abs(self.position) * 20  # MNQ point value
+                pnl = (current_price - self.entry_price) * abs(self.position) * 20  # MNQ $2/tick, 10 ticks/pt = $20/pt
                 self.logger.info(f"📈 LONG EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
             else:
-                # Exit short position
-                order_result = self.api.close_position(self.symbol)
-                pnl = (self.entry_price - current_price) * abs(self.position) * 20  # MNQ point value
+                pnl = (self.entry_price - current_price) * abs(self.position) * 20
                 self.logger.info(f"📉 SHORT EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
 
             # Update stats
@@ -523,7 +521,7 @@ class MNQ1MinBot:
             # Check performance vs backtest every 20 trades
             self.check_performance_vs_backtest()
 
-            # Reset position
+            # Reset position state only after confirmed close
             self.position = 0
             self.entry_price = 0
             self.stop_loss = 0
@@ -532,7 +530,7 @@ class MNQ1MinBot:
             self.breakeven_triggered = False
 
         except Exception as e:
-            self.logger.error(f"Failed to execute exit: {e}")
+            self.logger.error(f"Failed to execute exit: {e} — position may still be OPEN")
 
     def check_risk_limits(self) -> bool:
         """Check if we should stop trading due to risk limits"""
@@ -769,8 +767,11 @@ class MNQ1MinBot:
                     if self.check_exit_signals(indicators, current_price):
                         self.execute_exit(current_price)
 
-                # Wait before next iteration based on timeframe
-                time.sleep(self.poll_interval)
+                # Wait before next iteration — poll faster when in a position for quicker stop/TP checks
+                if self.position != 0:
+                    time.sleep(5)  # Check exits every 5 seconds
+                else:
+                    time.sleep(self.poll_interval)
 
             except Exception as e:
                 self.logger.error(f"Error in trading loop: {e}")
