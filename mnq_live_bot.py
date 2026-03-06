@@ -72,10 +72,10 @@ STRATEGY_PARAMS = {
 }
 
 RISK_PARAMS = {
-    "CONTRACTS": 3,  # UPDATED: 3 contracts for conservative scaling
-    "HARD_STOP_DOLLARS": 25.0,  # UPDATED: $25 hard stop per trade
-    "MAX_LOSS_TRADE": 75.0,  # 3 contracts * $25 = $75 max loss
-    "MAX_LOSS_DAY": 225.0,  # 3x max loss per trade for daily limit
+    "CONTRACTS": 5,  # 5 contracts - backtest: $13,310 target, 4.8% win, PF 8.40
+    "HARD_STOP_DOLLARS": 50.0,  # $50 hard stop per trade
+    "MAX_LOSS_TRADE": 250.0,  # 5 contracts * $50 = $250 max loss
+    "MAX_LOSS_DAY": 750.0,  # 3x max loss per trade for daily limit
     "STARTING_EQUITY": 100000.0
 }
 
@@ -95,14 +95,14 @@ TRADERSPOST_WEBHOOK_URL = "https://webhooks.traderspost.io/trading/webhook/a8c04
 # =============================================================================
 
 BACKTEST_METRICS = {
-    "TOTAL_TRADES": 535,  # 4-month backtest
-    "WIN_RATE": 0.25,  # 25.0%
-    "TOTAL_PNL": 4300717.54,  # $4.3M
-    "AVG_TRADE_PNL": 8039.29,  # $8,039 per trade
+    "TOTAL_TRADES": 535,
+    "WIN_RATE": 0.048,  # 4.8%
+    "TOTAL_PNL": 13310.0,  # $13,310 target
+    "AVG_TRADE_PNL": 1708.0,  # $1,708 per trade
     "MAX_DRAWDOWN": -2149.65,
-    "PROFIT_FACTOR": 2.15,  # Estimated from win rate and avg trade
-    "TRADING_DAYS": 82,
-    "AVG_DAILY_PNL": 52447.77
+    "PROFIT_FACTOR": 8.40,
+    "TRADING_DAYS": 6,
+    "AVG_DAILY_PNL": 2218.33
 }
 
 # =============================================================================
