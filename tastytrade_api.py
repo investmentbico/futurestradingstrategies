@@ -159,7 +159,7 @@ class TastytradeAPI:
         """Get account number from API"""
         try:
             url = f"{self.base_url}/customers/me/accounts"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=10)
             response.raise_for_status()
 
             accounts = response.json()['data']['items']
@@ -190,7 +190,7 @@ class TastytradeAPI:
         try:
             url = f"{self.base_url}/instruments/futures"
             params = {'product-code': product_code}
-            response = requests.get(url, headers=self._get_headers(), params=params)
+            response = requests.get(url, headers=self._get_headers(), params=params, timeout=10)
             if response.status_code == 200:
                 items = response.json().get('data', {}).get('items', [])
                 # Filter to active contracts and sort by expiration (nearest first)
@@ -211,66 +211,36 @@ class TastytradeAPI:
         return None
 
     def get_current_price(self, symbol: str = "MNQ") -> Optional[float]:
-        """Get current price for MNQ - try Tastytrade first, then Yahoo Finance fallback"""
-        # Try Tastytrade API first
-        try:
-            # Try futures quotes endpoint first
-            url = f"{self.base_url}/quotes/futures/{symbol}"
-            response = requests.get(url, headers=self._get_headers())
-            if response.status_code == 200:
-                data = response.json()
-                if 'data' in data and data['data']:
-                    quote = data['data'][0] if isinstance(data['data'], list) else data['data']
-                    price = float(quote.get('last-price', 0))
-                    if price > 0:
-                        return price
+        """Get current price — Tastytrade REST, then Yahoo Finance. All calls have 5s timeout."""
+        # Try Tastytrade endpoints (usually 403 for futures quotes on this token)
+        for endpoint in [
+            f"{self.base_url}/quotes/futures/{symbol}",
+            f"{self.base_url}/quotes/{symbol}",
+            f"{self.base_url}/market-data/quotes/{symbol}",
+        ]:
+            try:
+                response = requests.get(endpoint, headers=self._get_headers(), timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data and data['data']:
+                        quote = data['data'][0] if isinstance(data['data'], list) else data['data']
+                        price = float(quote.get('last-price', 0))
+                        if price > 0:
+                            return price
+            except Exception:
+                continue
 
-        except Exception as e:
-            pass  # Silently handle Tastytrade failures
-
-        # Try regular quotes endpoint
-        try:
-            url = f"{self.base_url}/quotes/{symbol}"
-            response = requests.get(url, headers=self._get_headers())
-            if response.status_code == 200:
-                data = response.json()
-                if 'data' in data and data['data']:
-                    quote = data['data'][0] if isinstance(data['data'], list) else data['data']
-                    price = float(quote.get('last-price', 0))
-                    if price > 0:
-                        return price
-
-        except Exception as e:
-            pass  # Silently handle endpoint failures
-
-        # Try market data endpoint
-        try:
-            url = f"{self.base_url}/market-data/quotes/{symbol}"
-            response = requests.get(url, headers=self._get_headers())
-            if response.status_code == 200:
-                data = response.json()
-                if 'data' in data and data['data']:
-                    price = float(data['data'].get('last-price', 0))
-                    if price > 0:
-                        return price
-
-        except Exception as e:
-            pass  # Silently handle endpoint failures
-
-        # Fallback to Yahoo Finance for real market data
+        # Yahoo Finance fallback — use cached ticker to avoid repeated slow init
         try:
             import yfinance as yf
-            ticker_symbol = f"{symbol}=F"  # Add =F for futures
-            ticker = yf.Ticker(ticker_symbol)
-            data = ticker.history(period='1d', interval='1m')
+            if not hasattr(self, '_yf_ticker'):
+                self._yf_ticker = yf.Ticker(f"{symbol}=F")
+            data = self._yf_ticker.history(period='1d', interval='1m')
             if not data.empty:
-                current_price = float(data['Close'].iloc[-1])
-                return current_price
-        except Exception as e:
-            pass  # Silently handle Yahoo Finance failures
+                return float(data['Close'].iloc[-1])
+        except Exception:
+            pass
 
-        # Final fallback - NO MOCK PRICES for live trading
-        # Return None so the bot knows price is unavailable
         return None
 
     def get_market_data(self, symbol: str = "MNQ", days: int = 1) -> List[Dict]:
@@ -284,7 +254,7 @@ class TastytradeAPI:
                 'days': days
             }
 
-            response = requests.get(url, headers=self._get_headers(), params=params)
+            response = requests.get(url, headers=self._get_headers(), params=params, timeout=10)
             response.raise_for_status()
 
             data = response.json()
@@ -343,7 +313,7 @@ class TastytradeAPI:
             }
 
             print(f"  Placing order: {action} {quantity} {futures_symbol}")
-            response = requests.post(order_url, headers=self._get_headers(), json=order_data)
+            response = requests.post(order_url, headers=self._get_headers(), json=order_data, timeout=10)
             response.raise_for_status()
 
             order = response.json()
@@ -363,7 +333,7 @@ class TastytradeAPI:
         """Get real account balance from API"""
         try:
             url = f"{self.base_url}/accounts/{self.account_number}/balances"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=10)
             response.raise_for_status()
 
             data = response.json().get('data', {})
@@ -389,7 +359,7 @@ class TastytradeAPI:
         """Get current positions"""
         try:
             url = f"{self.base_url}/accounts/{self.account_number}/positions"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=10)
             response.raise_for_status()
 
             return response.json()['data']['items']
@@ -441,7 +411,7 @@ class TastytradeAPI:
                 }]
             }
             print(f"  Closing: {action} {quantity} {futures_symbol}")
-            response = requests.post(order_url, headers=self._get_headers(), json=order_data)
+            response = requests.post(order_url, headers=self._get_headers(), json=order_data, timeout=10)
             response.raise_for_status()
             return response.json().get('data')
         except Exception as e:
@@ -452,7 +422,7 @@ class TastytradeAPI:
         """Cancel an order"""
         try:
             url = f"{self.base_url}/accounts/{self.account_number}/orders/{order_id}"
-            response = requests.delete(url, headers=self._get_headers())
+            response = requests.delete(url, headers=self._get_headers(), timeout=10)
             response.raise_for_status()
 
             print(f"✅ Order {order_id} cancelled")

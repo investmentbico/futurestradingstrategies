@@ -719,14 +719,6 @@ class MNQ1MinBot:
                     time.sleep(0.5)  # Wait before retry
                     continue
 
-                # Get live account balance and position for accurate stop loss monitoring (silent)
-                try:
-                    balance_data = self.api.get_account_balance()
-                    position_info = self.api.get_position(self.symbol)
-                    # Only log balance if there are significant changes or errors
-                except Exception as e:
-                    self.logger.warning(f"Could not fetch live account data: {e}")
-
                 # Update price data
                 self.update_price_data(current_price)
 
@@ -746,14 +738,18 @@ class MNQ1MinBot:
                 # Check for entry signals (only log when signals occur)
                 # No hedging: only enter if bot has no position AND broker confirms flat
                 if self.position == 0 and len(self.price_data) >= 5:
-                    # Double-check broker has no open position before entering
-                    broker_pos = self.api.get_positions()
-                    has_open = any(
-                        int(p.get('quantity', 0)) != 0
-                        for p in broker_pos
-                        if 'MNQ' in (p.get('symbol', '') or p.get('instrument', {}).get('symbol', '')).upper()
-                    )
-                    if has_open:
+                    # Check broker for open positions only every 5th poll to avoid API spam
+                    if loop_count % 5 == 1:
+                        try:
+                            broker_pos = self.api.get_positions()
+                            self._broker_has_open = any(
+                                int(p.get('quantity', 0)) != 0
+                                for p in broker_pos
+                                if 'MNQ' in (p.get('symbol', '') or p.get('instrument', {}).get('symbol', '')).upper()
+                            )
+                        except Exception:
+                            self._broker_has_open = False
+                    if getattr(self, '_broker_has_open', False):
                         if loop_count % 5 == 1:
                             self.logger.warning("⚠️  Broker has open MNQ position — skipping new entry (no hedging)")
                         continue
