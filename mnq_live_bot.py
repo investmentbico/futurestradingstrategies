@@ -149,7 +149,7 @@ class MNQ1MinBot:
     MNQ 1min Live Trading Bot using best performing strategy
     """
 
-    def __init__(self, api: TastytradeAPI, symbol: str = 'MNQM5'):
+    def __init__(self, api: TastytradeAPI, symbol: str = 'MNQ'):
         self.api = api
         self.symbol = symbol
 
@@ -803,7 +803,7 @@ def main():
     parser.add_argument('--demo', action='store_true', default=True, help='Use demo account (default: True)')
     parser.add_argument('--live', action='store_true', help='Use live account (overrides demo)')
     parser.add_argument('--max-trades', type=int, default=5, help='Maximum trades to take (default: 5)')
-    parser.add_argument('--symbol', default='MNQM5', help='Symbol to trade (default: MNQM5 - June 2025 contract)')
+    parser.add_argument('--symbol', default='MNQ', help='Symbol to trade (default: MNQ)')
 
     args = parser.parse_args()
 
