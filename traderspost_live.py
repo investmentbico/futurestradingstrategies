@@ -32,6 +32,8 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import urllib.request
+import urllib.error
 import numpy as np
 
 try:
@@ -255,6 +257,29 @@ class TradersPostLiveBot:
             logger.error(f"yfinance fetch error: {e}")
             return []
 
+    def _fetch_fast_price(self):
+        """Ultra-fast price fetch via Yahoo Finance direct HTTP (no library overhead)."""
+        try:
+            url = 'https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m&range=1m'
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json',
+            })
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+                meta = data['chart']['result'][0]['meta']
+                price = meta.get('regularMarketPrice', 0)
+                if price > 0:
+                    return float(price)
+        except Exception:
+            pass
+        # Fallback: yfinance fast_info
+        try:
+            import yfinance as yf
+            return float(yf.Ticker('NQ=F').fast_info.get('lastPrice', 0))
+        except Exception:
+            return 0.0
+
     # ── Bar Building ──────────────────────────────────────────────
     def _update_bar(self):
         if self.price <= 0:
@@ -372,54 +397,154 @@ class TradersPostLiveBot:
             self.emergency_stop = True
             return None
 
+        # Standard entry: strict EMA + Stoch + ATR conditions
         if ind['uptrend'] and ind['d_falling'] and ind['stoch_d'] <= STRATEGY["STOCH_LO"] and ind['atr'] > 0:
             return 'long'
         if ind['downtrend'] and ind['d_rising'] and ind['stoch_d'] >= STRATEGY["STOCH_HI"] and ind['atr'] > 0:
             return 'short'
+
+        # Quick re-entry: if we just exited profitably and trend is still strong,
+        # re-enter with relaxed Stoch threshold (catch continuation moves)
+        if hasattr(self, '_last_exit_pnl') and self._last_exit_pnl > 0:
+            if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 120:
+                if ind['uptrend'] and ind['stoch_d'] <= 50 and ind['atr'] > 0:
+                    logger.info(f"QUICK RE-ENTRY LONG: last trade +${self._last_exit_pnl:.0f}, trend still up, Stoch={ind['stoch_d']:.0f}")
+                    self._last_exit_pnl = 0  # only re-enter once
+                    return 'long'
+                if ind['downtrend'] and ind['stoch_d'] >= 50 and ind['atr'] > 0:
+                    logger.info(f"QUICK RE-ENTRY SHORT: last trade +${self._last_exit_pnl:.0f}, trend still down, Stoch={ind['stoch_d']:.0f}")
+                    self._last_exit_pnl = 0
+                    return 'short'
+
         return None
 
     def check_exit(self, ind):
+        """Smart multi-phase exit system:
+        Phase 0 (underwater): Hard stop only — give trade room to work
+        Phase 1 (breakeven+): Move stop to breakeven, lock in $0 loss
+        Phase 2 (1R profit):  Tight trail — lock 50% of peak profit
+        Phase 3 (2R+ spike):  Ultra-tight trail — lock 70% of peak, ride the spike
+        Phase 4 (3R+ runner): Lock 80% — massive winner, protect it aggressively
+        """
         if self.position == 0:
             return False
         pv = self.point_value
         c = abs(self.position)
 
+        # Calculate current P&L
         if self.position > 0:
             pnl = (self.price - self.entry_price) * c * pv
-            if pnl <= -self.hard_stop:
-                logger.info(f"HARD STOP: P&L=${pnl:.2f}")
-                return True
-            if self.price <= self.stop_loss:
-                logger.info(f"ATR STOP: {self.price:.2f} <= SL {self.stop_loss:.2f}")
-                return True
-            if self.price >= self.take_profit:
-                logger.info(f"TAKE PROFIT: {self.price:.2f} >= TP {self.take_profit:.2f}")
-                return True
-            if self.trailing_stop > 0 and self.price <= self.trailing_stop:
-                logger.info(f"TRAIL STOP: {self.price:.2f} <= {self.trailing_stop:.2f}")
-                return True
-            if ind and ind['atr'] > 0:
-                new_t = self.price - ind['atr'] * STRATEGY["SL_ATR_MULT"]
-                if new_t > self.trailing_stop:
-                    self.trailing_stop = new_t
         else:
             pnl = (self.entry_price - self.price) * c * pv
-            if pnl <= -self.hard_stop:
-                logger.info(f"HARD STOP: P&L=${pnl:.2f}")
+
+        # Track peak unrealized P&L for this trade
+        if not hasattr(self, '_peak_pnl'):
+            self._peak_pnl = 0.0
+        if pnl > self._peak_pnl:
+            self._peak_pnl = pnl
+
+        # Hard stop — always active, never violated
+        if pnl <= -self.hard_stop:
+            logger.info(f"HARD STOP: P&L=${pnl:.2f}")
+            return True
+
+        # Calculate R-multiple (how many risk units we're up)
+        r_unit = self.hard_stop  # 1R = hard stop amount
+        r_multiple = pnl / r_unit if r_unit > 0 else 0
+
+        # ── Smart Trailing Logic ──────────────────────────────
+        if self.position > 0:  # LONG
+            # Phase 4: 3R+ runner → lock 80% of peak
+            if self._peak_pnl >= r_unit * 3:
+                floor_pnl = self._peak_pnl * 0.80
+                floor_price = self.entry_price + floor_pnl / (c * pv)
+                if floor_price > self.trailing_stop:
+                    self.trailing_stop = floor_price
+                    logger.info(f"PHASE4 TRAIL: lock 80% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+
+            # Phase 3: 2R+ spike → lock 70% of peak
+            elif self._peak_pnl >= r_unit * 2:
+                floor_pnl = self._peak_pnl * 0.70
+                floor_price = self.entry_price + floor_pnl / (c * pv)
+                if floor_price > self.trailing_stop:
+                    self.trailing_stop = floor_price
+                    logger.info(f"PHASE3 TRAIL: lock 70% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+
+            # Phase 2: 1R profit → lock 50% of peak
+            elif self._peak_pnl >= r_unit:
+                floor_pnl = self._peak_pnl * 0.50
+                floor_price = self.entry_price + floor_pnl / (c * pv)
+                if floor_price > self.trailing_stop:
+                    self.trailing_stop = floor_price
+                    logger.info(f"PHASE2 TRAIL: lock 50% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+
+            # Phase 1: breakeven zone (0.5R+) → move stop to breakeven + $10
+            elif pnl >= r_unit * 0.5:
+                be_price = self.entry_price + 0.50  # breakeven + tiny buffer
+                if be_price > self.trailing_stop:
+                    self.trailing_stop = be_price
+                    logger.info(f"PHASE1 BREAKEVEN: moved SL to {self.trailing_stop:.2f}")
+
+            # Also apply ATR trail if it's tighter than phase trail
+            if ind and ind['atr'] > 0:
+                atr_trail = self.price - ind['atr'] * 1.0  # tighter 1x ATR trail
+                if atr_trail > self.trailing_stop:
+                    self.trailing_stop = atr_trail
+
+            # Check all exit conditions
+            if self.trailing_stop > 0 and self.price <= self.trailing_stop:
+                logger.info(f"SMART TRAIL EXIT: {self.price:.2f} <= {self.trailing_stop:.2f} | P&L=${pnl:.2f} | Peak=${self._peak_pnl:.0f} | R={r_multiple:.1f}")
+                return True
+            if self.price <= self.stop_loss:
+                logger.info(f"ATR STOP: {self.price:.2f} <= SL {self.stop_loss:.2f} | P&L=${pnl:.2f}")
+                return True
+
+        else:  # SHORT
+            # Phase 4: 3R+ runner → lock 80% of peak
+            if self._peak_pnl >= r_unit * 3:
+                floor_pnl = self._peak_pnl * 0.80
+                floor_price = self.entry_price - floor_pnl / (c * pv)
+                if self.trailing_stop == 0 or floor_price < self.trailing_stop:
+                    self.trailing_stop = floor_price
+                    logger.info(f"PHASE4 TRAIL: lock 80% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+
+            # Phase 3: 2R+ spike → lock 70% of peak
+            elif self._peak_pnl >= r_unit * 2:
+                floor_pnl = self._peak_pnl * 0.70
+                floor_price = self.entry_price - floor_pnl / (c * pv)
+                if self.trailing_stop == 0 or floor_price < self.trailing_stop:
+                    self.trailing_stop = floor_price
+                    logger.info(f"PHASE3 TRAIL: lock 70% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+
+            # Phase 2: 1R profit → lock 50% of peak
+            elif self._peak_pnl >= r_unit:
+                floor_pnl = self._peak_pnl * 0.50
+                floor_price = self.entry_price - floor_pnl / (c * pv)
+                if self.trailing_stop == 0 or floor_price < self.trailing_stop:
+                    self.trailing_stop = floor_price
+                    logger.info(f"PHASE2 TRAIL: lock 50% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+
+            # Phase 1: breakeven zone (0.5R+) → move stop to breakeven
+            elif pnl >= r_unit * 0.5:
+                be_price = self.entry_price - 0.50
+                if self.trailing_stop == 0 or be_price < self.trailing_stop:
+                    self.trailing_stop = be_price
+                    logger.info(f"PHASE1 BREAKEVEN: moved SL to {self.trailing_stop:.2f}")
+
+            # ATR trail for shorts
+            if ind and ind['atr'] > 0:
+                atr_trail = self.price + ind['atr'] * 1.0
+                if self.trailing_stop == 0 or atr_trail < self.trailing_stop:
+                    self.trailing_stop = atr_trail
+
+            # Check all exit conditions
+            if self.trailing_stop > 0 and self.price >= self.trailing_stop:
+                logger.info(f"SMART TRAIL EXIT: {self.price:.2f} >= {self.trailing_stop:.2f} | P&L=${pnl:.2f} | Peak=${self._peak_pnl:.0f} | R={r_multiple:.1f}")
                 return True
             if self.price >= self.stop_loss:
-                logger.info(f"ATR STOP: {self.price:.2f} >= SL {self.stop_loss:.2f}")
+                logger.info(f"ATR STOP: {self.price:.2f} >= SL {self.stop_loss:.2f} | P&L=${pnl:.2f}")
                 return True
-            if self.price <= self.take_profit:
-                logger.info(f"TAKE PROFIT: {self.price:.2f} <= TP {self.take_profit:.2f}")
-                return True
-            if self.trailing_stop > 0 and self.price >= self.trailing_stop:
-                logger.info(f"TRAIL STOP: {self.price:.2f} >= {self.trailing_stop:.2f}")
-                return True
-            if ind and ind['atr'] > 0:
-                new_t = self.price + ind['atr'] * STRATEGY["SL_ATR_MULT"]
-                if self.trailing_stop == 0 or new_t < self.trailing_stop:
-                    self.trailing_stop = new_t
+
         return False
 
     # ── Execution via TradersPost Webhook ─────────────────────────
@@ -460,6 +585,7 @@ class TradersPostLiveBot:
         self.entry_price = self.price
         self.position = qty if direction == 'long' else -qty
         self.trailing_stop = 0.0
+        self._peak_pnl = 0.0  # reset peak tracker for new trade
 
         d = 'LONG' if direction == 'long' else 'SHORT'
         logger.info("=" * 55)
@@ -498,6 +624,10 @@ class TradersPostLiveBot:
             pnl = (self.entry_price - self.price) * abs(self.position) * pv
             d = "SHORT"
 
+        # Track for quick re-entry logic
+        self._last_exit_pnl = pnl
+        self._last_exit_time = time.time()
+
         logger.info("=" * 55)
         logger.info(f"{d} EXIT: {abs(self.position)}x @ {self.price:.2f} | P&L: ${pnl:.2f}")
         logger.info("=" * 55)
@@ -523,6 +653,7 @@ class TradersPostLiveBot:
         self.stop_loss = 0
         self.take_profit = 0
         self.trailing_stop = 0
+        self._peak_pnl = 0.0
 
         self._write_state()
         return success
@@ -612,9 +743,14 @@ class TradersPostLiveBot:
                 await asyncio.sleep(5)
 
     async def _run_yfinance(self):
-        """Poll yfinance for 1-min bars (NQ=F). ~30s refresh."""
-        logger.info("Starting yfinance polling mode (NQ=F → MNQ price)...")
+        """FAST MODE: 1-second price polling + 30s bar refresh.
+        Checks exits every second, entries on each new 1-min bar."""
+        logger.info("Starting FAST yfinance mode (1s price poll + 30s bar refresh)...")
         last_bar_time = 0
+        last_bar_refresh = 0
+        tick_count = 0
+        BAR_REFRESH_INTERVAL = 30  # full bar data refresh
+        PRICE_POLL_INTERVAL = 1    # fast price check
 
         # Initial load — get all today's bars for warmup
         bars = self._fetch_yfinance_bars()
@@ -622,41 +758,76 @@ class TradersPostLiveBot:
             self.bars = bars[-self.max_bars:]
             last_bar_time = bars[-1]['time']
             self.price = bars[-1]['close']
-            logger.info(f"Loaded {len(self.bars)} bars from yfinance | Price: {self.price:.2f}")
+            logger.info(f"Loaded {len(self.bars)} bars | Price: {self.price:.2f}")
         else:
-            # Fallback to CSV warmup
             self.load_warmup_bars()
 
         self._write_state()
 
         while self.running:
             try:
-                await asyncio.sleep(30)  # poll every 30s
+                await asyncio.sleep(PRICE_POLL_INTERVAL)
+                tick_count += 1
+                now = time.time()
 
-                new_bars = self._fetch_yfinance_bars()
-                if not new_bars:
-                    continue
+                # ── FAST: Poll price every 1s ──────────────────────
+                new_price = self._fetch_fast_price()
+                if new_price > 0 and new_price != self.price:
+                    self.price = new_price
 
-                # Add only new bars we haven't seen
-                added = 0
-                for bar in new_bars:
-                    if bar['time'] > last_bar_time:
-                        self.bars.append(bar)
-                        if len(self.bars) > self.max_bars:
-                            self.bars = self.bars[-self.max_bars:]
-                        last_bar_time = bar['time']
-                        self.price = bar['close']
-                        added += 1
+                    # Build bars from ticks (like Rithmic mode)
+                    new_bar = self._update_bar()
 
-                        # Check exits on each new bar
-                        if self.position != 0:
-                            ind = self.get_indicators()
-                            if self.check_exit(ind):
-                                self.exit()
-                                continue
+                    # Check exits on EVERY price tick when in position
+                    if self.position != 0:
+                        ind = self.get_indicators()
+                        if self.check_exit(ind):
+                            self.exit()
+                    # Check entries on every tick too (fast re-entry)
+                    elif self.position == 0 and len(self.bars) >= STRATEGY["EMA_SLOW"] + 5:
+                        ind = self.get_indicators()
+                        entry = self.check_entry(ind)
+                        if entry and ind:
+                            self.enter(entry, ind['atr'])
 
-                if added > 0:
-                    self._evaluate_bar()
+                    # Evaluate on new bar close
+                    if new_bar:
+                        self._evaluate_bar()
+
+                # ── SLOW: Full bar data refresh every 30s ──────────
+                if now - last_bar_refresh >= BAR_REFRESH_INTERVAL:
+                    last_bar_refresh = now
+                    new_bars = self._fetch_yfinance_bars()
+                    if new_bars:
+                        added = 0
+                        for bar in new_bars:
+                            if bar['time'] > last_bar_time:
+                                self.bars.append(bar)
+                                if len(self.bars) > self.max_bars:
+                                    self.bars = self.bars[-self.max_bars:]
+                                last_bar_time = bar['time']
+                                self.price = bar['close']
+                                added += 1
+
+                        if added > 0:
+                            self._evaluate_bar()
+
+                # Status log every 10s
+                if tick_count % 10 == 0:
+                    self._write_state()
+                    pos = f"{'LONG' if self.position > 0 else 'SHORT'} {abs(self.position)}x" if self.position != 0 else "FLAT"
+                    wr = (self.wins / self.total_trades * 100) if self.total_trades > 0 else 0
+                    unrealized = 0.0
+                    if self.position != 0:
+                        if self.position > 0:
+                            unrealized = (self.price - self.entry_price) * abs(self.position) * self.point_value
+                        else:
+                            unrealized = (self.entry_price - self.price) * abs(self.position) * self.point_value
+                    logger.info(
+                        f"[{len(self.bars)} bars] {self.price:.2f} | {pos} | "
+                        f"Unreal=${unrealized:.0f} | Daily=${self.daily_pnl:.0f} | "
+                        f"Trades={self.daily_trades} | Total=${self.total_pnl:.0f} WR={wr:.0f}%"
+                    )
 
                 # Daily reset (midnight ET)
                 now_et = datetime.now(timezone(timedelta(hours=-5)))
@@ -669,7 +840,7 @@ class TradersPostLiveBot:
                 break
             except Exception as e:
                 logger.error(f"Poll error: {e}", exc_info=True)
-                await asyncio.sleep(30)
+                await asyncio.sleep(2)
 
     def _evaluate_bar(self):
         """Run strategy on latest completed bar."""
