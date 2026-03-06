@@ -406,9 +406,9 @@ class TradersPostLiveBot:
         if self.daily_trades >= self.max_trades or self.emergency_stop:
             return None
 
-        # Cooldown after a loss — wait 30s before re-entering
+        # Cooldown after a loss — wait 5s before re-entering
         if hasattr(self, '_last_exit_pnl') and self._last_exit_pnl < 0:
-            if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 30:
+            if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 5:
                 return None
 
         effective_limit = self._get_effective_daily_loss_limit()
@@ -424,60 +424,65 @@ class TradersPostLiveBot:
             self.emergency_stop = True
             return None
 
-        # ── MEAN REVERSION + TREND ENTRIES ───────────────────────────
+        # ── AGGRESSIVE MEAN REVERSION + TREND ENTRIES ─────────────────
         stoch = ind['stoch_d']
         stoch_lo = STRATEGY["STOCH_LO"]  # 25
         stoch_hi = STRATEGY["STOCH_HI"]  # 75
         atr_ok = ind['atr'] > 0
         price = ind['price']
 
-        # TREND FILTER: price must be on the right side of slow EMA
-        # Don't go long if price is below slow EMA (selloff too strong)
-        # Don't go short if price is above slow EMA (rally too strong)
         price_above_slow = price > ind['ema_slow']
         price_below_slow = price < ind['ema_slow']
 
-        # PRIMARY: Mean reversion — stoch reversal from extreme + price confirms trend
-        # LONG: uptrend + price above slow EMA + stoch oversold turning up
-        if ind['uptrend'] and price_above_slow and atr_ok and stoch <= stoch_lo + 5 and ind['d_rising']:
-            logger.info(f"REVERSAL LONG: uptrend + price above EMA55 + Stoch {stoch:.1f} turning up")
+        # PRIMARY: Mean reversion — stoch reversal from extreme
+        # LONG: uptrend + stoch oversold turning up (relaxed: no price>EMA55 req)
+        if ind['uptrend'] and atr_ok and stoch <= stoch_lo + 10 and ind['d_rising']:
+            logger.info(f"REVERSAL LONG: uptrend + Stoch {stoch:.1f} turning up")
             return 'long'
 
-        # SHORT: downtrend + price below slow EMA + stoch overbought turning down
-        if ind['downtrend'] and price_below_slow and atr_ok and stoch >= stoch_hi - 5 and ind['d_falling']:
-            logger.info(f"REVERSAL SHORT: downtrend + price below EMA55 + Stoch {stoch:.1f} turning down")
+        # SHORT: downtrend + stoch overbought turning down
+        if ind['downtrend'] and atr_ok and stoch >= stoch_hi - 10 and ind['d_falling']:
+            logger.info(f"REVERSAL SHORT: downtrend + Stoch {stoch:.1f} turning down")
             return 'short'
 
-        # SECONDARY: Momentum pullback — strong trend + moderate stoch pullback
+        # SECONDARY: Momentum — trend + moderate stoch pullback
         ema_gap = abs(ind['ema_fast'] - ind['ema_slow'])
-        if ema_gap > ind['atr'] * 0.5 and atr_ok:
-            if ind['uptrend'] and price_above_slow and stoch <= stoch_lo + 15 and ind['d_rising']:
-                logger.info(f"MOMENTUM LONG: strong gap={ema_gap:.1f}, Stoch {stoch:.1f} rising, price above EMA55")
+        if atr_ok:
+            if ind['uptrend'] and stoch <= stoch_lo + 20 and ind['d_rising']:
+                logger.info(f"MOMENTUM LONG: gap={ema_gap:.1f}, Stoch {stoch:.1f} rising")
                 return 'long'
-            if ind['downtrend'] and price_below_slow and stoch >= stoch_hi - 15 and ind['d_falling']:
-                logger.info(f"MOMENTUM SHORT: strong gap={ema_gap:.1f}, Stoch {stoch:.1f} falling, price below EMA55")
+            if ind['downtrend'] and stoch >= stoch_hi - 20 and ind['d_falling']:
+                logger.info(f"MOMENTUM SHORT: gap={ema_gap:.1f}, Stoch {stoch:.1f} falling")
                 return 'short'
 
-        # TERTIARY: EMA crossover fresh — enter on cross if stoch confirms
+        # TERTIARY: EMA crossover fresh
         if hasattr(self, '_prev_uptrend'):
             cross_up = ind['uptrend'] and not self._prev_uptrend
-            cross_down = ind['downtrend'] and self._prev_uptrend  # was uptrend, now downtrend
-            if cross_up and price_above_slow and stoch <= stoch_hi - 15 and atr_ok:
+            cross_down = ind['downtrend'] and self._prev_uptrend
+            if cross_up and stoch <= stoch_hi and atr_ok:
                 logger.info(f"EMA CROSS LONG: fresh bullish cross + Stoch {stoch:.1f}")
                 return 'long'
-            if cross_down and price_below_slow and stoch >= stoch_lo + 15 and atr_ok:
+            if cross_down and stoch >= stoch_lo and atr_ok:
                 logger.info(f"EMA CROSS SHORT: fresh bearish cross + Stoch {stoch:.1f}")
                 return 'short'
         self._prev_uptrend = ind['uptrend']
 
-        # Quick re-entry after profitable exit (within 2 min)
+        # COUNTER-TREND: Deep stoch extreme even against trend (strong bounce play)
+        if atr_ok and stoch <= 15 and ind['d_rising']:
+            logger.info(f"DEEP OVERSOLD LONG: Stoch {stoch:.1f} extreme bounce")
+            return 'long'
+        if atr_ok and stoch >= 85 and ind['d_falling']:
+            logger.info(f"DEEP OVERBOUGHT SHORT: Stoch {stoch:.1f} extreme rejection")
+            return 'short'
+
+        # Quick re-entry after profitable exit (within 3 min)
         if hasattr(self, '_last_exit_pnl') and self._last_exit_pnl > 0:
-            if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 120:
-                if ind['uptrend'] and price_above_slow and stoch <= 50 and atr_ok:
+            if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 180:
+                if ind['uptrend'] and stoch <= 55 and atr_ok:
                     logger.info(f"QUICK RE-ENTRY LONG: +${self._last_exit_pnl:.0f}, Stoch={stoch:.0f}")
                     self._last_exit_pnl = 0
                     return 'long'
-                if ind['downtrend'] and price_below_slow and stoch >= 50 and atr_ok:
+                if ind['downtrend'] and stoch >= 45 and atr_ok:
                     logger.info(f"QUICK RE-ENTRY SHORT: +${self._last_exit_pnl:.0f}, Stoch={stoch:.0f}")
                     self._last_exit_pnl = 0
                     return 'short'
@@ -520,92 +525,76 @@ class TradersPostLiveBot:
 
         # ── Smart Trailing Logic ──────────────────────────────
         if self.position > 0:  # LONG
-            # Phase 4: 3R+ runner → lock 80% of peak
+            # Phase 3: 3R+ runner → lock 60% of peak
             if self._peak_pnl >= r_unit * 3:
-                floor_pnl = self._peak_pnl * 0.80
+                floor_pnl = self._peak_pnl * 0.60
                 floor_price = self.entry_price + floor_pnl / (c * pv)
                 if floor_price > self.trailing_stop:
                     self.trailing_stop = floor_price
-                    logger.info(f"PHASE4 TRAIL: lock 80% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+                    logger.info(f"PHASE3 TRAIL: lock 60% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
 
-            # Phase 3: 2R+ spike → lock 70% of peak
+            # Phase 2: 2R+ → lock 40% of peak
             elif self._peak_pnl >= r_unit * 2:
-                floor_pnl = self._peak_pnl * 0.70
+                floor_pnl = self._peak_pnl * 0.40
                 floor_price = self.entry_price + floor_pnl / (c * pv)
                 if floor_price > self.trailing_stop:
                     self.trailing_stop = floor_price
-                    logger.info(f"PHASE3 TRAIL: lock 70% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+                    logger.info(f"PHASE2 TRAIL: lock 40% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
 
-            # Phase 2: 1R profit → lock 50% of peak
+            # Phase 1: 1R+ → move to breakeven
             elif self._peak_pnl >= r_unit:
-                floor_pnl = self._peak_pnl * 0.50
-                floor_price = self.entry_price + floor_pnl / (c * pv)
-                if floor_price > self.trailing_stop:
-                    self.trailing_stop = floor_price
-                    logger.info(f"PHASE2 TRAIL: lock 50% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
-
-            # Phase 1: breakeven zone (0.5R+) → move stop to breakeven + $10
-            elif pnl >= r_unit * 0.5:
-                be_price = self.entry_price + 0.50  # breakeven + tiny buffer
+                be_price = self.entry_price + 1.0
                 if be_price > self.trailing_stop:
                     self.trailing_stop = be_price
                     logger.info(f"PHASE1 BREAKEVEN: moved SL to {self.trailing_stop:.2f}")
 
-            # Also apply ATR trail if it's tighter than phase trail
+            # ATR trail — 1.5x ATR (give room)
             if ind and ind['atr'] > 0:
-                atr_trail = self.price - ind['atr'] * 1.0  # tighter 1x ATR trail
+                atr_trail = self.price - ind['atr'] * 1.5
                 if atr_trail > self.trailing_stop:
                     self.trailing_stop = atr_trail
 
-            # Check all exit conditions
+            # Check exit conditions
             if self.trailing_stop > 0 and self.price <= self.trailing_stop:
-                logger.info(f"SMART TRAIL EXIT: {self.price:.2f} <= {self.trailing_stop:.2f} | P&L=${pnl:.2f} | Peak=${self._peak_pnl:.0f} | R={r_multiple:.1f}")
+                logger.info(f"TRAIL EXIT: {self.price:.2f} <= {self.trailing_stop:.2f} | P&L=${pnl:.2f} | Peak=${self._peak_pnl:.0f} | R={r_multiple:.1f}")
                 return True
             if self.price <= self.stop_loss:
                 logger.info(f"ATR STOP: {self.price:.2f} <= SL {self.stop_loss:.2f} | P&L=${pnl:.2f}")
                 return True
 
         else:  # SHORT
-            # Phase 4: 3R+ runner → lock 80% of peak
+            # Phase 3: 3R+ runner → lock 60% of peak
             if self._peak_pnl >= r_unit * 3:
-                floor_pnl = self._peak_pnl * 0.80
+                floor_pnl = self._peak_pnl * 0.60
                 floor_price = self.entry_price - floor_pnl / (c * pv)
                 if self.trailing_stop == 0 or floor_price < self.trailing_stop:
                     self.trailing_stop = floor_price
-                    logger.info(f"PHASE4 TRAIL: lock 80% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+                    logger.info(f"PHASE3 TRAIL: lock 60% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
 
-            # Phase 3: 2R+ spike → lock 70% of peak
+            # Phase 2: 2R+ → lock 40% of peak
             elif self._peak_pnl >= r_unit * 2:
-                floor_pnl = self._peak_pnl * 0.70
+                floor_pnl = self._peak_pnl * 0.40
                 floor_price = self.entry_price - floor_pnl / (c * pv)
                 if self.trailing_stop == 0 or floor_price < self.trailing_stop:
                     self.trailing_stop = floor_price
-                    logger.info(f"PHASE3 TRAIL: lock 70% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
+                    logger.info(f"PHASE2 TRAIL: lock 40% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
 
-            # Phase 2: 1R profit → lock 50% of peak
+            # Phase 1: 1R+ → move to breakeven
             elif self._peak_pnl >= r_unit:
-                floor_pnl = self._peak_pnl * 0.50
-                floor_price = self.entry_price - floor_pnl / (c * pv)
-                if self.trailing_stop == 0 or floor_price < self.trailing_stop:
-                    self.trailing_stop = floor_price
-                    logger.info(f"PHASE2 TRAIL: lock 50% of ${self._peak_pnl:.0f} peak → SL={self.trailing_stop:.2f}")
-
-            # Phase 1: breakeven zone (0.5R+) → move stop to breakeven
-            elif pnl >= r_unit * 0.5:
-                be_price = self.entry_price - 0.50
+                be_price = self.entry_price - 1.0
                 if self.trailing_stop == 0 or be_price < self.trailing_stop:
                     self.trailing_stop = be_price
                     logger.info(f"PHASE1 BREAKEVEN: moved SL to {self.trailing_stop:.2f}")
 
-            # ATR trail for shorts
+            # ATR trail for shorts — 1.5x ATR
             if ind and ind['atr'] > 0:
-                atr_trail = self.price + ind['atr'] * 1.0
+                atr_trail = self.price + ind['atr'] * 1.5
                 if self.trailing_stop == 0 or atr_trail < self.trailing_stop:
                     self.trailing_stop = atr_trail
 
-            # Check all exit conditions
+            # Check exit conditions
             if self.trailing_stop > 0 and self.price >= self.trailing_stop:
-                logger.info(f"SMART TRAIL EXIT: {self.price:.2f} >= {self.trailing_stop:.2f} | P&L=${pnl:.2f} | Peak=${self._peak_pnl:.0f} | R={r_multiple:.1f}")
+                logger.info(f"TRAIL EXIT: {self.price:.2f} >= {self.trailing_stop:.2f} | P&L=${pnl:.2f} | Peak=${self._peak_pnl:.0f} | R={r_multiple:.1f}")
                 return True
             if self.price >= self.stop_loss:
                 logger.info(f"ATR STOP: {self.price:.2f} >= SL {self.stop_loss:.2f} | P&L=${pnl:.2f}")
@@ -815,7 +804,7 @@ class TradersPostLiveBot:
         last_bar_time = 0
         last_bar_refresh = 0
         tick_count = 0
-        BAR_REFRESH_INTERVAL = 30  # full bar data refresh
+        BAR_REFRESH_INTERVAL = 15  # full bar data refresh (faster)
         PRICE_POLL_INTERVAL = 0.5  # fast price check (0.5s)
 
         # Initial load — get all today's bars for warmup
@@ -875,7 +864,7 @@ class TradersPostLiveBot:
                         if added > 0:
                             self._evaluate_bar()
 
-                # Status log every 10s
+                # Status log every 5s (10 ticks at 0.5s)
                 if tick_count % 10 == 0:
                     self._write_state()
                     pos = f"{'LONG' if self.position > 0 else 'SHORT'} {abs(self.position)}x" if self.position != 0 else "FLAT"
