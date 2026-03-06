@@ -386,6 +386,11 @@ class TradersPostLiveBot:
         if self.daily_trades >= self.max_trades or self.emergency_stop:
             return None
 
+        # Cooldown after a loss — wait 30s before re-entering
+        if hasattr(self, '_last_exit_pnl') and self._last_exit_pnl < 0:
+            if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 30:
+                return None
+
         effective_limit = self._get_effective_daily_loss_limit()
         if self.daily_pnl <= -effective_limit:
             self.emergency_stop = True
@@ -399,22 +404,59 @@ class TradersPostLiveBot:
             self.emergency_stop = True
             return None
 
-        # Standard entry: strict EMA + Stoch + ATR conditions
-        if ind['uptrend'] and ind['d_falling'] and ind['stoch_d'] <= STRATEGY["STOCH_LO"] and ind['atr'] > 0:
+        # ── MEAN REVERSION + TREND ENTRIES ───────────────────────────
+        stoch = ind['stoch_d']
+        atr_ok = ind['atr'] > 0
+        price = ind['price']
+
+        # TREND FILTER: price must be on the right side of slow EMA
+        # Don't go long if price is below slow EMA (selloff too strong)
+        # Don't go short if price is above slow EMA (rally too strong)
+        price_above_slow = price > ind['ema_slow']
+        price_below_slow = price < ind['ema_slow']
+
+        # PRIMARY: Mean reversion — stoch reversal from extreme + price confirms trend
+        # LONG: uptrend + price above slow EMA + stoch oversold turning up
+        if ind['uptrend'] and price_above_slow and atr_ok and stoch <= 30 and ind['d_rising']:
+            logger.info(f"REVERSAL LONG: uptrend + price above EMA55 + Stoch {stoch:.1f} turning up")
             return 'long'
-        if ind['downtrend'] and ind['d_rising'] and ind['stoch_d'] >= STRATEGY["STOCH_HI"] and ind['atr'] > 0:
+
+        # SHORT: downtrend + price below slow EMA + stoch overbought turning down
+        if ind['downtrend'] and price_below_slow and atr_ok and stoch >= 70 and ind['d_falling']:
+            logger.info(f"REVERSAL SHORT: downtrend + price below EMA55 + Stoch {stoch:.1f} turning down")
             return 'short'
 
-        # Quick re-entry: if we just exited profitably and trend is still strong,
-        # re-enter with relaxed Stoch threshold (catch continuation moves)
+        # SECONDARY: Momentum pullback — strong trend + moderate stoch pullback
+        ema_gap = abs(ind['ema_fast'] - ind['ema_slow'])
+        if ema_gap > ind['atr'] * 0.5 and atr_ok:
+            if ind['uptrend'] and price_above_slow and stoch <= 40 and ind['d_rising']:
+                logger.info(f"MOMENTUM LONG: strong gap={ema_gap:.1f}, Stoch {stoch:.1f} rising, price above EMA55")
+                return 'long'
+            if ind['downtrend'] and price_below_slow and stoch >= 60 and ind['d_falling']:
+                logger.info(f"MOMENTUM SHORT: strong gap={ema_gap:.1f}, Stoch {stoch:.1f} falling, price below EMA55")
+                return 'short'
+
+        # TERTIARY: EMA crossover fresh — enter on cross if stoch confirms
+        if hasattr(self, '_prev_uptrend'):
+            cross_up = ind['uptrend'] and not self._prev_uptrend
+            cross_down = ind['downtrend'] and not self._prev_uptrend is False
+            if cross_up and price_above_slow and stoch <= 60 and atr_ok:
+                logger.info(f"EMA CROSS LONG: fresh bullish cross + Stoch {stoch:.1f}")
+                return 'long'
+            if cross_down and price_below_slow and stoch >= 40 and atr_ok:
+                logger.info(f"EMA CROSS SHORT: fresh bearish cross + Stoch {stoch:.1f}")
+                return 'short'
+        self._prev_uptrend = ind['uptrend']
+
+        # Quick re-entry after profitable exit (within 2 min)
         if hasattr(self, '_last_exit_pnl') and self._last_exit_pnl > 0:
             if hasattr(self, '_last_exit_time') and time.time() - self._last_exit_time < 120:
-                if ind['uptrend'] and ind['stoch_d'] <= 50 and ind['atr'] > 0:
-                    logger.info(f"QUICK RE-ENTRY LONG: last trade +${self._last_exit_pnl:.0f}, trend still up, Stoch={ind['stoch_d']:.0f}")
-                    self._last_exit_pnl = 0  # only re-enter once
+                if ind['uptrend'] and price_above_slow and stoch <= 50 and atr_ok:
+                    logger.info(f"QUICK RE-ENTRY LONG: +${self._last_exit_pnl:.0f}, Stoch={stoch:.0f}")
+                    self._last_exit_pnl = 0
                     return 'long'
-                if ind['downtrend'] and ind['stoch_d'] >= 50 and ind['atr'] > 0:
-                    logger.info(f"QUICK RE-ENTRY SHORT: last trade +${self._last_exit_pnl:.0f}, trend still down, Stoch={ind['stoch_d']:.0f}")
+                if ind['downtrend'] and price_below_slow and stoch >= 50 and atr_ok:
+                    logger.info(f"QUICK RE-ENTRY SHORT: +${self._last_exit_pnl:.0f}, Stoch={stoch:.0f}")
                     self._last_exit_pnl = 0
                     return 'short'
 
@@ -557,8 +599,8 @@ class TradersPostLiveBot:
 
         # Prop firm protection: check remaining drawdown budget
         remaining_budget = self.max_daily_loss + self.daily_pnl  # positive = room left
-        if remaining_budget < self.hard_stop:
-            logger.warning(f"SKIP: remaining budget ${remaining_budget:.2f} < hard stop ${self.hard_stop:.2f}")
+        if remaining_budget < 100:
+            logger.warning(f"SKIP: remaining budget ${remaining_budget:.2f} too low")
             return False
 
         # Cancel stale orders first
@@ -568,13 +610,12 @@ class TradersPostLiveBot:
         mult = STRATEGY["SL_ATR_MULT"]
         rr = STRATEGY["TP_RR"]
 
-        # Calculate ATR-based stops
+        # ATR-based stops — use full ATR distance for breathing room
         atr_sl = atr * mult
         atr_tp = atr * mult * rr
 
-        # Cap broker-side SL at hard stop distance for drawdown protection
-        hard_stop_pts = self.hard_stop / (qty * self.point_value)
-        sl_amount = min(atr_sl, hard_stop_pts)
+        # Use ATR SL as primary, hard stop is last-resort safety net only
+        sl_amount = atr_sl
         tp_amount = atr_tp  # TP stays at full ATR target for big wins
 
         if direction == 'long':
