@@ -5,9 +5,11 @@ Apex Trader Funding 150K Account Backtest
 Simulates our MNQ strategy against Apex prop firm rules:
 - Starting balance: $150,000
 - Profit target: $9,000
-- Trailing drawdown: $4,000 (intraday trailing threshold)
-- Max contracts: 12 mini = 120 MNQ micros
-- Consistency rule: best single day < 30% of total profit
+- Trailing drawdown: $5,000 (intraday trailing threshold)
+- Max contracts: 17 mini = 170 MNQ micros
+- Minimum 7 trading days to pass
+- Consistency rule: only on PA (after passing), not during eval
+- All positions must close by 4:59 PM ET
 - Data: Last 3 months (Dec 2025 - Feb 2026)
 
 Strategy: EMA 21/55 + Stochastic D + ATR (same as live bot)
@@ -27,10 +29,12 @@ warnings.filterwarnings('ignore')
 APEX_RULES = {
     "starting_balance": 150_000,
     "profit_target": 9_000,
-    "trailing_drawdown": 4_000,
-    "max_mnq_contracts": 120,       # 12 mini = 120 micro
-    "consistency_pct": 0.30,        # best day < 30% of total profit
+    "trailing_drawdown": 5_000,     # $5,000 for 150K account
+    "max_mnq_contracts": 170,       # 17 mini = 170 micro
+    "min_trading_days": 7,          # minimum 7 trading days to pass
+    "consistency_pct": 0.30,        # best day < 30% (PA only, not eval)
     "safety_net": 150_100,          # trailing stops at starting + $100
+    "close_by": "16:59",            # all positions closed by 4:59 PM ET
 }
 
 # =============================================================================
@@ -465,7 +469,9 @@ def main():
     print(f"  Profit Target:      ${APEX_RULES['profit_target']:,}")
     print(f"  Trailing Drawdown:  ${APEX_RULES['trailing_drawdown']:,}")
     print(f"  Max MNQ Contracts:  {APEX_RULES['max_mnq_contracts']}")
-    print(f"  Consistency Rule:   Best day < {APEX_RULES['consistency_pct']*100:.0f}% of total profit")
+    print(f"  Min Trading Days:   {APEX_RULES['min_trading_days']}")
+    print(f"  Close By:           4:59 PM ET daily")
+    print(f"  Consistency Rule:   Best day < {APEX_RULES['consistency_pct']*100:.0f}% (PA only, not during eval)")
     print(f"\nStrategy: EMA {STRATEGY_PARAMS['EMA_FAST']}/{STRATEGY_PARAMS['EMA_SLOW']}, "
           f"Stoch {STRATEGY_PARAMS['STOCH_LO']}/{STRATEGY_PARAMS['STOCH_HI']}, "
           f"ATR {STRATEGY_PARAMS['ATR_LEN']}, "
@@ -494,7 +500,16 @@ def main():
         all_results.append(result)
 
         # Results
-        status = "PASSED" if result['target_hit'] and not result['account_blown'] else "BLOWN" if result['account_blown'] else "DID NOT REACH TARGET"
+        passed_eval = result['target_hit'] and not result['account_blown'] and result['trading_days'] >= APEX_RULES['min_trading_days']
+        if result['account_blown']:
+            status = "BLOWN"
+        elif result['target_hit'] and result['trading_days'] >= APEX_RULES['min_trading_days']:
+            status = "PASSED"
+        elif result['target_hit'] and result['trading_days'] < APEX_RULES['min_trading_days']:
+            status = f"TARGET HIT but need {APEX_RULES['min_trading_days'] - result['trading_days']} more trading days"
+        else:
+            status = "DID NOT REACH TARGET"
+        result['passed_eval'] = passed_eval
         print(f"\n  STATUS: {status}")
         print(f"  Final P&L: ${result['total_pnl']:,.2f}")
         print(f"  Final Balance: ${result['apex_final_balance']:,.2f}")
@@ -547,11 +562,11 @@ def main():
     print(f"{'─' * 95}")
 
     for r in all_results:
-        status = "PASSED" if r['target_hit'] and not r['account_blown'] else "BLOWN" if r['account_blown'] else "NO TARGET"
+        status = "PASSED" if r.get('passed_eval') else "BLOWN" if r['account_blown'] else "TARGET*" if r['target_hit'] else "NO TARGET"
         print(f"{r['label']:<45} ${r['total_pnl']:>9,.0f} {status:>12} "
               f"{r['win_rate']:>5.1f}% {r['profit_factor']:>5.2f} ${r['max_drawdown']:>9,.0f} {r['trading_days']:>5}")
 
-    print(f"\nApex 150K Rules: $9,000 target | $4,000 trailing drawdown | 30% consistency")
+    print(f"\nApex 150K Rules: $9,000 target | $5,000 trailing drawdown | 7 min days | 30% consistency (PA only)")
     print(f"Data period: Last 3 months of MNQ 1-min bars (NY session)")
 
     # Save results to CSV
