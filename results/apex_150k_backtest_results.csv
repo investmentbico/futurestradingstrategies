@@ -1,0 +1,5 @@
+config,contracts,hard_stop,total_pnl,target_hit,account_blown,target_hit_day,days_to_target,total_trades,win_rate,profit_factor,max_drawdown,max_daily_drawdown,best_day,consistency_pass,trading_days
+"Conservative (3 contracts, $25 hard stop)",3,25,13805.14,True,False,2025-12-09,9,36,5.6,8.4,1041.96,383.88,8784.74,False,8
+"Moderate (5 contracts, $50 hard stop)",5,50,13310.49,True,False,2025-12-04,6,21,4.8,8.4,1707.72,629.16,14838.45,False,5
+"Aggressive (10 contracts, $100 hard stop)",10,100,26931.37,True,False,2025-12-04,6,21,4.8,9.16,3134.62,1154.86,29736.03,False,5
+"Live Bot Config (10 contracts, $400 hard stop)",10,400,-4184.82,False,True,,0,9,0.0,0.0,3719.84,3254.86,0.0,True,2
