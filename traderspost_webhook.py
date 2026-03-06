@@ -39,7 +39,8 @@ MONTH_CODES = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
 
 
 def get_front_month_ticker(symbol="MNQ"):
-    """Auto-detect front-month futures ticker (e.g. MNQM2026)."""
+    """Auto-detect front-month futures ticker (e.g. MNQH6 for March 2026).
+    Tradovate format: SYMBOL + month code + last digit of year."""
     now = datetime.now()
     month = now.month
     year = now.year
@@ -47,9 +48,9 @@ def get_front_month_ticker(symbol="MNQ"):
     quarters = [3, 6, 9, 12]
     for q in quarters:
         if month <= q:
-            return f"{symbol}{MONTH_CODES[q]}{year}"
+            return f"{symbol}{MONTH_CODES[q]}{year % 10}"
     # Roll to next year Q1
-    return f"{symbol}{MONTH_CODES[3]}{year + 1}"
+    return f"{symbol}{MONTH_CODES[3]}{(year + 1) % 10}"
 
 
 class TradersPostClient:

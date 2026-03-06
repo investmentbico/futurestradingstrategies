@@ -310,6 +310,26 @@ class TradersPostLiveBot:
             }
             return new_bar
 
+    def _update_bar_tick_only(self):
+        """Update current bar OHLC from tick without creating new bars.
+        Used in yfinance mode where bar completion comes from yfinance refresh."""
+        if self.price <= 0:
+            return
+        bar_start = int(time.time() // 60) * 60
+        if self._bar and self._bar_start == bar_start:
+            self._bar['high'] = max(self._bar['high'], self.price)
+            self._bar['low'] = min(self._bar['low'], self.price)
+            self._bar['close'] = self.price
+        else:
+            self._bar_start = bar_start
+            self._bar = {
+                'time': bar_start,
+                'open': self.price,
+                'high': self.price,
+                'low': self.price,
+                'close': self.price,
+            }
+
     # ── CSV Warm-Up ───────────────────────────────────────────────
     def load_warmup_bars(self):
         csv_path = PROJECT_DIR / "data" / f"{self.symbol.lower()}_1min.csv"
@@ -406,6 +426,8 @@ class TradersPostLiveBot:
 
         # ── MEAN REVERSION + TREND ENTRIES ───────────────────────────
         stoch = ind['stoch_d']
+        stoch_lo = STRATEGY["STOCH_LO"]  # 25
+        stoch_hi = STRATEGY["STOCH_HI"]  # 75
         atr_ok = ind['atr'] > 0
         price = ind['price']
 
@@ -417,33 +439,33 @@ class TradersPostLiveBot:
 
         # PRIMARY: Mean reversion — stoch reversal from extreme + price confirms trend
         # LONG: uptrend + price above slow EMA + stoch oversold turning up
-        if ind['uptrend'] and price_above_slow and atr_ok and stoch <= 30 and ind['d_rising']:
+        if ind['uptrend'] and price_above_slow and atr_ok and stoch <= stoch_lo + 5 and ind['d_rising']:
             logger.info(f"REVERSAL LONG: uptrend + price above EMA55 + Stoch {stoch:.1f} turning up")
             return 'long'
 
         # SHORT: downtrend + price below slow EMA + stoch overbought turning down
-        if ind['downtrend'] and price_below_slow and atr_ok and stoch >= 70 and ind['d_falling']:
+        if ind['downtrend'] and price_below_slow and atr_ok and stoch >= stoch_hi - 5 and ind['d_falling']:
             logger.info(f"REVERSAL SHORT: downtrend + price below EMA55 + Stoch {stoch:.1f} turning down")
             return 'short'
 
         # SECONDARY: Momentum pullback — strong trend + moderate stoch pullback
         ema_gap = abs(ind['ema_fast'] - ind['ema_slow'])
         if ema_gap > ind['atr'] * 0.5 and atr_ok:
-            if ind['uptrend'] and price_above_slow and stoch <= 40 and ind['d_rising']:
+            if ind['uptrend'] and price_above_slow and stoch <= stoch_lo + 15 and ind['d_rising']:
                 logger.info(f"MOMENTUM LONG: strong gap={ema_gap:.1f}, Stoch {stoch:.1f} rising, price above EMA55")
                 return 'long'
-            if ind['downtrend'] and price_below_slow and stoch >= 60 and ind['d_falling']:
+            if ind['downtrend'] and price_below_slow and stoch >= stoch_hi - 15 and ind['d_falling']:
                 logger.info(f"MOMENTUM SHORT: strong gap={ema_gap:.1f}, Stoch {stoch:.1f} falling, price below EMA55")
                 return 'short'
 
         # TERTIARY: EMA crossover fresh — enter on cross if stoch confirms
         if hasattr(self, '_prev_uptrend'):
             cross_up = ind['uptrend'] and not self._prev_uptrend
-            cross_down = ind['downtrend'] and not self._prev_uptrend is False
-            if cross_up and price_above_slow and stoch <= 60 and atr_ok:
+            cross_down = ind['downtrend'] and self._prev_uptrend  # was uptrend, now downtrend
+            if cross_up and price_above_slow and stoch <= stoch_hi - 15 and atr_ok:
                 logger.info(f"EMA CROSS LONG: fresh bullish cross + Stoch {stoch:.1f}")
                 return 'long'
-            if cross_down and price_below_slow and stoch >= 40 and atr_ok:
+            if cross_down and price_below_slow and stoch >= stoch_lo + 15 and atr_ok:
                 logger.info(f"EMA CROSS SHORT: fresh bearish cross + Stoch {stoch:.1f}")
                 return 'short'
         self._prev_uptrend = ind['uptrend']
@@ -614,8 +636,9 @@ class TradersPostLiveBot:
         atr_sl = atr * mult
         atr_tp = atr * mult * rr
 
-        # Use ATR SL as primary, hard stop is last-resort safety net only
-        sl_amount = atr_sl
+        # Cap broker SL at hard stop distance so crash can't exceed hard stop
+        hard_stop_pts = self.hard_stop / (qty * self.point_value)
+        sl_amount = min(atr_sl, hard_stop_pts)
         tp_amount = atr_tp  # TP stays at full ATR target for big wins
 
         if direction == 'long':
@@ -633,7 +656,7 @@ class TradersPostLiveBot:
         d = 'LONG' if direction == 'long' else 'SHORT'
         logger.info("=" * 55)
         logger.info(f"{d} ENTRY: {qty}x @ {self.price:.2f}")
-        logger.info(f"  SL: {self.stop_loss:.2f} ({sl_amount:.2f} pts, capped from ATR {atr_sl:.2f})")
+        logger.info(f"  SL: {self.stop_loss:.2f} ({sl_amount:.2f} pts | ATR={atr_sl:.2f} | cap={hard_stop_pts:.1f})")
         logger.info(f"  TP: {self.take_profit:.2f} ({tp_amount:.2f} pts)")
         logger.info(f"  ATR: {atr:.2f} | Hard Stop: ${self.hard_stop:.0f} | Budget: ${remaining_budget:.0f}")
         logger.info("=" * 55)
@@ -818,8 +841,9 @@ class TradersPostLiveBot:
                 if new_price > 0 and new_price != self.price:
                     self.price = new_price
 
-                    # Build bars from ticks (like Rithmic mode)
-                    new_bar = self._update_bar()
+                    # Update current bar's OHLC from tick (don't build new bars from ticks
+                    # — yfinance refresh handles completed bars to avoid duplicates)
+                    self._update_bar_tick_only()
 
                     # Check exits on EVERY price tick when in position
                     if self.position != 0:
@@ -832,10 +856,6 @@ class TradersPostLiveBot:
                         entry = self.check_entry(ind)
                         if entry and ind:
                             self.enter(entry, ind['atr'])
-
-                    # Evaluate on new bar close
-                    if new_bar:
-                        self._evaluate_bar()
 
                 # ── SLOW: Full bar data refresh every 30s ──────────
                 if now - last_bar_refresh >= BAR_REFRESH_INTERVAL:
