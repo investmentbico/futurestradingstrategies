@@ -886,10 +886,17 @@ class TradersPostLiveBot:
                             unrealized = (self.price - self.entry_price) * abs(self.position) * self.point_value
                         else:
                             unrealized = (self.entry_price - self.price) * abs(self.position) * self.point_value
+                    # Show indicator values so you can see signal building
+                    ind = self.get_indicators()
+                    ind_str = ""
+                    if ind:
+                        trend = "UP" if ind['uptrend'] else "DN"
+                        d_dir = "↑" if ind['d_rising'] else "↓"
+                        ind_str = f" | {trend} StD={ind['stoch_d']:.0f}{d_dir} ATR={ind['atr']:.1f}"
                     logger.info(
                         f"[{len(self.bars)} bars] {self.price:.2f} | {pos} | "
                         f"Unreal=${unrealized:.0f} | Daily=${self.daily_pnl:.0f} | "
-                        f"Trades={self.daily_trades} | Total=${self.total_pnl:.0f} WR={wr:.0f}%"
+                        f"Trades={self.daily_trades} | Total=${self.total_pnl:.0f} WR={wr:.0f}%{ind_str}"
                     )
 
                 # Daily reset (midnight ET)
