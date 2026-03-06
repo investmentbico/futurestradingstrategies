@@ -811,12 +811,12 @@ class TradersPostLiveBot:
     async def _run_yfinance(self):
         """FAST MODE: 1-second price polling + 30s bar refresh.
         Checks exits every second, entries on each new 1-min bar."""
-        logger.info("Starting FAST yfinance mode (1s price poll + 30s bar refresh)...")
+        logger.info("Starting FAST yfinance mode (0.5s price poll + 30s bar refresh)...")
         last_bar_time = 0
         last_bar_refresh = 0
         tick_count = 0
         BAR_REFRESH_INTERVAL = 30  # full bar data refresh
-        PRICE_POLL_INTERVAL = 1    # fast price check
+        PRICE_POLL_INTERVAL = 0.5  # fast price check (0.5s)
 
         # Initial load — get all today's bars for warmup
         bars = self._fetch_yfinance_bars()
