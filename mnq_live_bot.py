@@ -75,6 +75,9 @@ STRATEGY_PARAMS = {
     "TRAIL_ATR_MULT": 0.7, "BE_POINTS": 3.0
 }
 
+# Point value per contract: MNQ=$2/pt, NQ=$20/pt, ES=$50/pt, MES=$5/pt
+POINT_VALUES = {"MNQ": 2.0, "NQ": 20.0, "ES": 50.0, "MES": 5.0}
+
 RISK_PARAMS = {
     "CONTRACTS": 1,             # 1 contract for live test
     "HARD_STOP_DOLLARS": 30.0,  # BACKTEST WINNER: $30 hard stop (best PF 9.40, lowest DD)
@@ -147,6 +150,7 @@ class MNQ1MinBot:
         self.api = api
         self.symbol = symbol
         self.timeframe = timeframe
+        self.point_value = POINT_VALUES.get(symbol.upper(), 2.0)  # $/point per contract
 
         # Strategy state
         self.position = 0
@@ -416,7 +420,7 @@ class MNQ1MinBot:
             # Check stop loss conditions
             if self.position > 0:  # Long position
                 # Hard stop loss (dollar amount) - NEW OPTIMIZED LOGIC
-                hard_stop_price = self.entry_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (abs(self.position) * 20))
+                hard_stop_price = self.entry_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (abs(self.position) * self.point_value))
                 if current_price <= hard_stop_price:
                     self.logger.info(f"🚨 HARD STOP HIT: ${current_price:.2f} <= ${hard_stop_price:.2f}")
                     return True
@@ -431,7 +435,7 @@ class MNQ1MinBot:
 
             else:  # Short position
                 # Hard stop loss (dollar amount) - NEW OPTIMIZED LOGIC
-                hard_stop_price = self.entry_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (abs(self.position) * 20))
+                hard_stop_price = self.entry_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (abs(self.position) * self.point_value))
                 if current_price >= hard_stop_price:
                     self.logger.info(f"🚨 HARD STOP HIT: ${current_price:.2f} >= ${hard_stop_price:.2f}")
                     return True
@@ -468,7 +472,7 @@ class MNQ1MinBot:
                 self.trailing_stop = self.stop_loss
                 self.breakeven_triggered = False
 
-                hard_stop_price = current_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
+                hard_stop_price = current_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * self.point_value))
                 self.logger.info(f"📈 LONG ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
 
@@ -486,7 +490,7 @@ class MNQ1MinBot:
                 self.trailing_stop = self.stop_loss
                 self.breakeven_triggered = False
 
-                hard_stop_price = current_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
+                hard_stop_price = current_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * self.point_value))
                 self.logger.info(f"📉 SHORT ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
 
@@ -504,10 +508,10 @@ class MNQ1MinBot:
                 return  # Do NOT reset position — keep trying to close
 
             if self.position > 0:
-                pnl = (current_price - self.entry_price) * abs(self.position) * 20  # MNQ $2/tick, 10 ticks/pt = $20/pt
+                pnl = (current_price - self.entry_price) * abs(self.position) * self.point_value  # MNQ $2/tick, 10 ticks/pt = $20/pt
                 self.logger.info(f"📈 LONG EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
             else:
-                pnl = (self.entry_price - current_price) * abs(self.position) * 20
+                pnl = (self.entry_price - current_price) * abs(self.position) * self.point_value
                 self.logger.info(f"📉 SHORT EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
 
             # Update stats
@@ -756,7 +760,9 @@ class MNQ1MinBot:
 
                     entry_signal = self.check_entry_signals(indicators, current_price)
                     if entry_signal and indicators.get('atr', 0) > 0:
-                        self.logger.info(f"🎯 SIGNAL DETECTED: {entry_signal.upper()} at ${current_price:.2f}")
+                        # BEEP ALERT — signal going live
+                        print('\a\a\a', flush=True)  # Terminal bell x3
+                        self.logger.info(f"🔔🔔🔔 ALERT: {entry_signal.upper()} SIGNAL LIVE at ${current_price:.2f}")
                         self.logger.info(f"📊 Indicators: ATR={indicators.get('atr', 0):.4f}, StochD={indicators.get('stoch_d', 0):.2f}, Uptrend={indicators.get('uptrend', False)}, Downtrend={indicators.get('downtrend', False)}")
                         self.execute_entry(entry_signal, current_price, indicators['atr'])
                         if self.position != 0:
@@ -765,6 +771,7 @@ class MNQ1MinBot:
                 # Check for exit signals
                 elif self.position != 0:
                     if self.check_exit_signals(indicators, current_price):
+                        print('\a\a', flush=True)  # Terminal bell x2 on exit
                         self.execute_exit(current_price)
 
                 # Wait before next iteration — poll faster when in a position for quicker stop/TP checks
