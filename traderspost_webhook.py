@@ -21,14 +21,22 @@ import os
 import json
 import time
 import logging
+import ssl
 import urllib.request
 import urllib.error
+
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
 from datetime import datetime, timezone
 from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Use the .env next to this script, not cwd
+    load_dotenv(Path(__file__).resolve().parent / '.env')
 except ImportError:
     pass
 
@@ -87,7 +95,7 @@ class TradersPostClient:
                 req = urllib.request.Request(
                     self.webhook_url, data=data, headers=headers, method='POST'
                 )
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
                     body = resp.read().decode('utf-8')
                     result = json.loads(body) if body else {}
                     success = result.get('success', resp.status == 200)
