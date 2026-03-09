@@ -1,0 +1,23 @@
+; PropFirmBot — US100/NASDAQ 2min Optimized Preset
+; Avg $2,158/day, 2.9% max DD (SAFE)
+EMA_Fast=21
+EMA_Slow=55
+Stoch_K=9
+Stoch_D=3
+Stoch_Smooth=2
+ATR_Period=9
+Stoch_Lo=20
+Stoch_Hi=80
+SL_ATR_Mult=2.5
+TP_RR=1.5
+Lots=5.0
+HardStop=2000.0
+MaxDailyLoss=7500.0
+DailyTarget=10100.0
+MinHoldSeconds=61
+MaxDailyTrades=6
+MaxConsecLosses=3
+LossCooldownSec=120
+MagicNumber=123790
+Slippage=20
+Timeframe=2
