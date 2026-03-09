@@ -149,7 +149,7 @@ class MNQ1MinBot:
     MNQ 1min Live Trading Bot using best performing strategy
     """
 
-    def __init__(self, api: TastytradeAPI, symbol: str = 'MNQ'):
+    def __init__(self, api: TastytradeAPI, symbol: str = 'MNQ', force_trade: bool = False):
         self.api = api
         self.symbol = symbol
 
@@ -175,6 +175,7 @@ class MNQ1MinBot:
         # Control flags
         self.running = True
         self.emergency_stop = False
+        self.force_trade = force_trade
 
         # Setup logging
         self.logger = logging.getLogger(f"MNQ1MinBot")
@@ -551,6 +552,8 @@ class MNQ1MinBot:
             # Fallback: assume system is in ET
             now_et = datetime.now()
 
+        if self.force_trade:
+            return True  # Bypass window check - trade anytime
         current_minutes = now_et.hour * 60 + now_et.minute
         start_minutes = TRADING_WINDOW["START_HOUR"] * 60 + TRADING_WINDOW["START_MINUTE"]
         end_minutes = TRADING_WINDOW["END_HOUR"] * 60 + TRADING_WINDOW["END_MINUTE"]
@@ -804,6 +807,7 @@ def main():
     parser.add_argument('--live', action='store_true', help='Use live account (overrides demo)')
     parser.add_argument('--max-trades', type=int, default=5, help='Maximum trades to take (default: 5)')
     parser.add_argument('--symbol', default='MNQ', help='Symbol to trade (default: MNQ)')
+    parser.add_argument('--force', action='store_true', help='Bypass trading window check - trade immediately')
 
     args = parser.parse_args()
 
@@ -834,7 +838,7 @@ def main():
         logger.info("✅ Tastytrade API connected successfully")
 
         # Initialize trading bot
-        bot = MNQ1MinBot(api, args.symbol)
+        bot = MNQ1MinBot(api, args.symbol, force_trade=args.force)
 
         # Get account balance
         balance = bot.api.get_account_balance()
