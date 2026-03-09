@@ -32,7 +32,6 @@ import numpy as np
 from typing import Dict, List, Optional, Any
 import threading
 import signal
-import requests
 
 # Load environment variables from .env file
 try:
@@ -61,6 +60,12 @@ except ImportError:
     print("❌ Tastytrade API not found. Please ensure tastytrade_api.py is in the same directory.")
     sys.exit(1)
 
+try:
+    from traderspost_webhook import TradersPostClient
+except ImportError:
+    print("❌ TradersPost webhook client not found. Please ensure traderspost_webhook.py is in the same directory.")
+    sys.exit(1)
+
 # =============================================================================
 # MNQ 1MIN STRATEGY PARAMETERS (OPTIMAL WINNER - UPDATED 2026)
 # =============================================================================
@@ -72,11 +77,11 @@ STRATEGY_PARAMS = {
 }
 
 RISK_PARAMS = {
-    "CONTRACTS": 5,  # 5 contracts - backtest: $13,310 target, 4.8% win, PF 8.40
-    "HARD_STOP_DOLLARS": 50.0,  # $50 hard stop per trade
-    "MAX_LOSS_TRADE": 250.0,  # 5 contracts * $50 = $250 max loss
-    "MAX_LOSS_DAY": 750.0,  # 3x max loss per trade for daily limit
-    "STARTING_EQUITY": 100000.0
+    "CONTRACTS": int(os.getenv('TRADING_CONTRACTS', 3)),
+    "HARD_STOP_DOLLARS": float(os.getenv('HARD_STOP_DOLLARS', 200.0)),
+    "MAX_LOSS_TRADE": 600.0,  # 3 contracts * $200 = $600 max loss
+    "MAX_LOSS_DAY": float(os.getenv('MAX_DAILY_LOSS', 1000.0)),
+    "STARTING_EQUITY": float(os.getenv('PROP_ACCOUNT_SIZE', 50000.0))
 }
 
 # Trading window (ET) - NY session hours
@@ -86,9 +91,6 @@ TRADING_WINDOW = {
     "END_HOUR": 15,
     "END_MINUTE": 45,
 }
-
-# TradersPost webhook for order execution
-TRADERSPOST_WEBHOOK_URL = "https://webhooks.traderspost.io/trading/webhook/a8c040ef-f8e2-40f6-96d1-8088d43ca4dd/41f87a00ae87dc679f126cd02d3810b6"
 
 # =============================================================================
 # BACKTEST PERFORMANCE METRICS FOR COMPARISON
@@ -152,6 +154,7 @@ class MNQ1MinBot:
     def __init__(self, api: TastytradeAPI, symbol: str = 'MNQ', force_trade: bool = False):
         self.api = api
         self.symbol = symbol
+        self.tp_client = TradersPostClient()
 
         # Strategy state
         self.position = 0
@@ -439,27 +442,25 @@ class MNQ1MinBot:
 
         return False
 
-    def send_webhook(self, action: str, quantity: int = None):
-        """Send order to TradersPost webhook"""
-        if quantity is None:
-            quantity = RISK_PARAMS["CONTRACTS"]
-        payload = {
-            "ticker": self.symbol,
-            "action": action,
-            "quantity": quantity
-        }
-        try:
-            resp = requests.post(
-                TRADERSPOST_WEBHOOK_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
-            self.logger.info(f"🔗 Webhook {action.upper()}: {resp.status_code} - {resp.text}")
-            return resp.ok
-        except Exception as e:
-            self.logger.error(f"Webhook failed for {action}: {e}")
-            return False
+    def send_webhook_entry(self, direction: str, quantity: int, price: float = None,
+                           stop_loss_amount: float = None, take_profit_amount: float = None):
+        """Send entry order to TradersPost webhook"""
+        if direction == 'long':
+            success, result = self.tp_client.send_long(
+                quantity=quantity, signal_price=price,
+                stop_loss_amount=stop_loss_amount, take_profit_amount=take_profit_amount)
+        else:
+            success, result = self.tp_client.send_short(
+                quantity=quantity, signal_price=price,
+                stop_loss_amount=stop_loss_amount, take_profit_amount=take_profit_amount)
+        self.logger.info(f"🔗 Webhook {direction.upper()}: {'OK' if success else 'FAILED'} - {result}")
+        return success
+
+    def send_webhook_exit(self):
+        """Send exit/flatten signal to TradersPost webhook"""
+        success, result = self.tp_client.send_exit()
+        self.logger.info(f"🔗 Webhook EXIT: {'OK' if success else 'FAILED'} - {result}")
+        return success
 
     def execute_entry(self, signal: str, current_price: float, atr: float):
         """Execute entry order"""
@@ -474,12 +475,13 @@ class MNQ1MinBot:
                 self.trailing_stop = self.stop_loss
                 self.breakeven_triggered = False
 
-                # Calculate hard stop price
+                # Calculate hard stop price and SL/TP in points for webhook
                 hard_stop_price = current_price - (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
+                sl_points = current_price - self.stop_loss
+                tp_points = self.take_profit - current_price
 
-                # Send webhook + place market order
-                self.send_webhook("buy", quantity)
-                order_result = self.api.place_market_order(self.symbol, 'BUY', quantity)
+                # Send webhook to TradersPost (executes via Tradovate)
+                self.send_webhook_entry('long', quantity, current_price, sl_points, tp_points)
                 self.logger.info(f"📈 LONG ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
 
@@ -491,12 +493,13 @@ class MNQ1MinBot:
                 self.trailing_stop = self.stop_loss
                 self.breakeven_triggered = False
 
-                # Calculate hard stop price
+                # Calculate hard stop price and SL/TP in points for webhook
                 hard_stop_price = current_price + (RISK_PARAMS["HARD_STOP_DOLLARS"] / (quantity * 20))
+                sl_points = self.stop_loss - current_price
+                tp_points = current_price - self.take_profit
 
-                # Send webhook + place market order
-                self.send_webhook("sell", quantity)
-                order_result = self.api.place_market_order(self.symbol, 'SELL', quantity)
+                # Send webhook to TradersPost (executes via Tradovate)
+                self.send_webhook_entry('short', quantity, current_price, sl_points, tp_points)
                 self.logger.info(f"📉 SHORT ENTRY: {quantity} contracts @ ${current_price:.2f}")
                 self.logger.info(f"🎯 Targets: Hard Stop ${hard_stop_price:.2f}, ATR SL ${self.stop_loss:.2f}, TP ${self.take_profit:.2f}")
 
@@ -507,16 +510,13 @@ class MNQ1MinBot:
     def execute_exit(self, current_price: float):
         """Execute exit order"""
         try:
+            # Send exit/flatten signal to TradersPost (handles position closing)
+            self.send_webhook_exit()
+
             if self.position > 0:
-                # Exit long position - sell to close
-                self.send_webhook("sell", abs(self.position))
-                order_result = self.api.close_position(self.symbol)
                 pnl = (current_price - self.entry_price) * abs(self.position) * 20  # MNQ point value
                 self.logger.info(f"📈 LONG EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
             else:
-                # Exit short position - buy to close
-                self.send_webhook("buy", abs(self.position))
-                order_result = self.api.close_position(self.symbol)
                 pnl = (self.entry_price - current_price) * abs(self.position) * 20  # MNQ point value
                 self.logger.info(f"📉 SHORT EXIT: @ ${current_price:.2f}, P&L: ${pnl:.2f}")
 
@@ -705,7 +705,7 @@ class MNQ1MinBot:
     def run_trading_loop(self, max_trades: int = 0):
         """Main trading loop"""
         self.logger.info("🎯 Starting MNQ 1min live trading loop...")
-        self.logger.info("📊 5 contracts | $50 stop | $13,310 target | PF 8.40 | 0.5s polling")
+        self.logger.info(f"📊 {RISK_PARAMS['CONTRACTS']} contracts | ${RISK_PARAMS['HARD_STOP_DOLLARS']:.0f} stop | ${RISK_PARAMS['MAX_LOSS_DAY']:.0f} daily limit | 0.5s polling")
 
         trade_count = 0
 
@@ -830,7 +830,7 @@ def main():
     logger.info(f"🎯 Account: {'DEMO' if is_demo else 'LIVE'}")
     logger.info(f"📊 Symbol: {args.symbol}")
     logger.info(f"⚙️  Max Trades: {args.max_trades}")
-    logger.info(f"💎 Strategy: 5 contracts, $50 stop, $13,310 target, PF 8.40, $1,708 avg trade")
+    logger.info(f"💎 Strategy: {RISK_PARAMS['CONTRACTS']} contracts, ${RISK_PARAMS['HARD_STOP_DOLLARS']:.0f} stop, FundedNex $50K challenge")
 
     try:
         # Initialize Webull API
