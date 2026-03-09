@@ -14,7 +14,7 @@ Usage:
 
 Requires .env:
   TRADERSPOST_WEBHOOK_URL=https://webhooks.traderspost.io/trading/webhook/YOUR_UUID/YOUR_PASSWORD
-  TRADERSPOST_TICKER=MNQM2026
+  TRADERSPOST_TICKER=MNQ
 """
 
 import os
@@ -39,18 +39,11 @@ MONTH_CODES = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
 
 
 def get_front_month_ticker(symbol="MNQ"):
-    """Auto-detect front-month futures ticker (e.g. MNQH6 for March 2026).
-    Tradovate format: SYMBOL + month code + last digit of year."""
-    now = datetime.now()
-    month = now.month
-    year = now.year
-    # Find next quarterly month
-    quarters = [3, 6, 9, 12]
-    for q in quarters:
-        if month <= q:
-            return f"{symbol}{MONTH_CODES[q]}{year % 10}"
-    # Roll to next year Q1
-    return f"{symbol}{MONTH_CODES[3]}{(year + 1) % 10}"
+    """Return the base symbol for TradersPost webhook.
+    TradersPost resolves the front-month contract automatically —
+    just send 'MNQ', NOT 'MNQH6' or 'MNQM2026'.
+    Confirmed working: ticker='MNQ' on 2026-03-09."""
+    return symbol
 
 
 class TradersPostClient:
