@@ -37,6 +37,9 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,10 +48,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mt5")
 
-# ── MT5 Credentials ─────────────────────────────────────────────────
-MT5_LOGIN = 1237326
-MT5_PASSWORD = "kzC{9]2o;LU2"
-MT5_SERVER = "Upcomers"
+# ── MT5 Credentials (from .env) ─────────────────────────────────────
+MT5_LOGIN = int(os.environ.get('MT5_LOGIN', '0'))
+MT5_PASSWORD = os.environ.get('MT5_PASSWORD', '')
+MT5_SERVER = os.environ.get('MT5_SERVER', 'Upcomers')
 
 # ── Prop Firm Rules ──────────────────────────────────────────────────
 ACCOUNT_BALANCE = 500_000
