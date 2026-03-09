@@ -50,10 +50,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mt5_bot")
 
-# ── MT5 Credentials ─────────────────────────────────────────────────
-MT5_LOGIN = 1237326
-MT5_PASSWORD = "kzC{9]2o;LU2"
-MT5_SERVER = "Upcomers"
+# ── MT5 Credentials (from env vars or defaults) ────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+MT5_LOGIN = int(os.environ.get('MT5_LOGIN', '0'))
+MT5_PASSWORD = os.environ.get('MT5_PASSWORD', '')
+MT5_SERVER = os.environ.get('MT5_SERVER', 'Upcomers')
+
+if MT5_LOGIN == 0 or MT5_PASSWORD == '':
+    # Fallback: check for config file
+    config_path = Path(__file__).parent / '.mt5_credentials.json'
+    if config_path.exists():
+        with open(config_path) as f:
+            creds = json.load(f)
+            MT5_LOGIN = creds.get('login', MT5_LOGIN)
+            MT5_PASSWORD = creds.get('password', MT5_PASSWORD)
+            MT5_SERVER = creds.get('server', MT5_SERVER)
 
 # ── Prop Firm Rules ──────────────────────────────────────────────────
 ACCOUNT_BALANCE = 500_000
