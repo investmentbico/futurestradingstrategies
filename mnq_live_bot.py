@@ -180,22 +180,18 @@ class MNQ1MinBot:
         self.emergency_stop = False
         self.force_trade = force_trade
 
-        # Setup logging
-        self.logger = logging.getLogger(f"MNQ1MinBot")
+        # Setup logging — use root handlers from main(), don't add duplicates
+        self.logger = logging.getLogger("MNQ1MinBot")
         self.logger.setLevel(logging.INFO)
-        
-        # Add file handler for trading session log
-        file_handler = logging.FileHandler('trading_session.log')
-        file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
-        
-        # Also add stream handler for console output
-        stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.INFO)
-        stream_handler.setFormatter(formatter)
-        self.logger.addHandler(stream_handler)
+        self.logger.propagate = True  # inherit root handlers set in main()
+        # Only add trading_session.log if not already attached
+        if not any(isinstance(h, logging.FileHandler) and
+                   getattr(h, 'baseFilename', '').endswith('trading_session.log')
+                   for h in self.logger.handlers):
+            fh = logging.FileHandler('trading_session.log')
+            fh.setLevel(logging.INFO)
+            fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            self.logger.addHandler(fh)
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
