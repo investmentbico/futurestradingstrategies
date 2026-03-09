@@ -417,10 +417,11 @@ class TradersPostLiveBot:
             logger.warning(f"DAILY LOSS LIMIT: ${self.daily_pnl:.2f} (limit: ${effective_limit:.0f})")
             return None
 
-        # Prop firm: if we hit profit target, stop trading (don't risk giving it back)
-        profit_target = float(os.getenv('APEX_PROFIT_TARGET', '0'))
-        if profit_target > 0 and self.daily_pnl >= profit_target:
-            logger.info(f"PROFIT TARGET HIT: ${self.daily_pnl:.2f} >= ${profit_target:.0f} — stopping!")
+        # Prop firm: if we hit daily profit cap, stop trading
+        # FundedNex consistency rule: no single day > 40% of profit target
+        max_daily_profit = float(os.getenv('PROP_MAX_DAILY_PROFIT', os.getenv('APEX_PROFIT_TARGET', '0')))
+        if max_daily_profit > 0 and self.daily_pnl >= max_daily_profit:
+            logger.info(f"DAILY PROFIT CAP: ${self.daily_pnl:.2f} >= ${max_daily_profit:.0f} — stopping (consistency rule)!")
             self.emergency_stop = True
             return None
 
@@ -976,12 +977,17 @@ async def main():
     for s in (sig.SIGINT, sig.SIGTERM):
         loop.add_signal_handler(s, lambda: asyncio.create_task(bot.shutdown()))
 
-    profit_target = float(os.getenv('APEX_PROFIT_TARGET', '0'))
-    max_dd = float(os.getenv('APEX_MAX_DRAWDOWN', '0'))
+    prop_firm = os.getenv('PROP_FIRM', 'Apex')
+    account_size = os.getenv('PROP_ACCOUNT_SIZE', os.getenv('APEX_ACCOUNT_SIZE', '50000'))
+    profit_target = float(os.getenv('PROP_PROFIT_TARGET', os.getenv('APEX_PROFIT_TARGET', '0')))
+    max_dd = float(os.getenv('PROP_MAX_DRAWDOWN', os.getenv('APEX_MAX_DRAWDOWN', '0')))
+    max_daily_profit = float(os.getenv('PROP_MAX_DAILY_PROFIT', '0'))
     logger.info("=" * 60)
-    logger.info("APEX PROP FIRM CHALLENGE BOT — LIVE")
-    logger.info(f"Account:    $50K Apex | Max DD: ${max_dd:.0f} | Target: ${profit_target:.0f}")
-    logger.info(f"Signals:    TradersPost → Apex/Tradovate")
+    logger.info(f"{prop_firm.upper()} PROP FIRM CHALLENGE BOT — LIVE")
+    logger.info(f"Account:    ${account_size} {prop_firm} | Max DD: ${max_dd:.0f} | Target: ${profit_target:.0f}")
+    logger.info(f"Signals:    TradersPost → {prop_firm}/Tradovate")
+    if max_daily_profit > 0:
+        logger.info(f"Consistency: Max ${max_daily_profit:.0f}/day (40% rule)")
     logger.info(f"Ticker:     {tp.ticker}")
     logger.info(f"Contracts:  {args.contracts} MNQ (${args.contracts * 2}/pt)")
     logger.info(f"Hard Stop:  ${bot.hard_stop:.0f}/trade | Max Daily Loss: ${bot.max_daily_loss:.0f}")
