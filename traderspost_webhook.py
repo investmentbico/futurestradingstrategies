@@ -36,7 +36,7 @@ from pathlib import Path
 try:
     from dotenv import load_dotenv
     # Use the .env next to this script, not cwd
-    load_dotenv(Path(__file__).resolve().parent / '.env')
+    load_dotenv(Path(__file__).resolve().parent / '.env', override=True)
 except ImportError:
     pass
 

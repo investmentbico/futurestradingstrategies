@@ -36,7 +36,7 @@ import signal
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 except ImportError:
     # If python-dotenv not available, try manual loading
     def load_dotenv():

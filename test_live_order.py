@@ -4,9 +4,11 @@ Quick live order test: Buy 1 contract MNQ, wait 5 seconds, exit.
 Usage: python test_live_order.py
 """
 
+import os
 import sys
 import time
 import logging
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,11 +16,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("test_live_order")
 
+# Load .env BEFORE importing traderspost_webhook (which also loads it)
+env_path = Path(__file__).resolve().parent / '.env'
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(env_path, override=True)
 except ImportError:
-    pass
+    # Manual fallback
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, val = line.split('=', 1)
+                os.environ[key.strip()] = val.strip()
+
+# Debug: verify the env var loaded
+url = os.getenv('TRADERSPOST_WEBHOOK_URL', '')
+if url:
+    logger.info(f"Webhook URL loaded: {url[:60]}...")
+else:
+    logger.error(f"TRADERSPOST_WEBHOOK_URL not found. Checked .env at: {env_path}")
+    logger.error(f".env exists: {env_path.exists()}")
+    if env_path.exists():
+        # Show relevant lines (redacted)
+        for line in env_path.read_text().splitlines():
+            if 'TRADERSPOST' in line:
+                key = line.split('=')[0]
+                logger.error(f"  Found key: {key} (length of value: {len(line.split('=', 1)[1]) if '=' in line else 0})")
+    sys.exit(1)
 
 from traderspost_webhook import TradersPostClient
 
@@ -26,7 +51,7 @@ def main():
     tp = TradersPostClient()
 
     if not tp.webhook_url:
-        logger.error("TRADERSPOST_WEBHOOK_URL not set in .env — aborting")
+        logger.error("TradersPostClient has no webhook URL despite env var being set")
         sys.exit(1)
 
     logger.info("=" * 60)
