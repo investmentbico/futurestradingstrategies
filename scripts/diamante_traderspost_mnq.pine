@@ -52,17 +52,25 @@ barcolor(barbuy ? color.green : na)
 barcolor(barsell ? color.red : na)
 
 // ============================================================
-// STRATEGY ENTRIES — Close + Reverse for TradersPost webhook
+// STRATEGY ENTRIES — Auto-reverse for TradersPost webhook
 // ============================================================
+// TradersPost uses the "sentiment" field ({{strategy.market_position}})
+// to detect close+reverse automatically. strategy.entry() with opposite
+// direction auto-reverses: closes current position and opens new one.
+//
+// TradingView Alert Message (paste this in alert):
+// {
+//     "ticker": "{{ticker}}",
+//     "action": "{{strategy.order.action}}",
+//     "sentiment": "{{strategy.market_position}}",
+//     "quantity": "{{strategy.order.contracts}}",
+//     "price": "{{close}}",
+//     "time": "{{timenow}}",
+//     "interval": "{{interval}}"
+// }
 
-// LONG ENTRY: close any short first, then open long
 if buySignal and time_cond
-    if strategy.position_size < 0
-        strategy.close("Short", comment="closeshort")
-    strategy.entry("Long", strategy.long, qty=1, comment="long")
+    strategy.entry("Long", strategy.long, qty=1)
 
-// SHORT ENTRY: close any long first, then open short
 if sellSignal and time_cond
-    if strategy.position_size > 0
-        strategy.close("Long", comment="closelong")
-    strategy.entry("Short", strategy.short, qty=1, comment="short")
+    strategy.entry("Short", strategy.short, qty=1)
