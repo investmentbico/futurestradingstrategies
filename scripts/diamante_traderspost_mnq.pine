@@ -6,9 +6,9 @@ strategy("Bruno Iarussi DIAMANTE CODE - Binance Strategy",
      default_qty_value=1)
 
 // Inputs
-a = input.int(1, title="Key Value (sensitivity)")
-c = input.int(10, title="ATR Period")
-h = input.bool(false, title="Signals from Heikin Ashi Candles")
+sensitivity = input.int(1, title="Key Value (sensitivity)")
+atrPeriod = input.int(10, title="ATR Period")
+useHA = input.bool(false, title="Signals from Heikin Ashi Candles")
 
 // BACKTEST RANGE
 fromDay   = input.int(1,    title="From Day",   minval=1, maxval=31)
@@ -22,11 +22,11 @@ finishDate = timestamp(toYear, toMonth, toDay, 0, 0)
 time_cond  = (time >= startDate and time <= finishDate)
 
 // ATR Calculation
-xATR  = ta.atr(c)
-nLoss = a * xATR
+xATR  = ta.atr(atrPeriod)
+nLoss = sensitivity * xATR
 
 // Price Source
-src = h ? request.security(syminfo.tickerid, timeframe.period, close) : close
+src = useHA ? request.security(syminfo.tickerid, timeframe.period, close) : close
 
 // Trailing Stop Calculation
 var float xATRTrailingStop = na
