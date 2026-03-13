@@ -50,7 +50,8 @@ plotshape(sellSignal, title="Sell", text="Sell", style=shape.labeldown, location
 barcolor(barbuy ? color.green : na)
 barcolor(barsell ? color.red : na)
 
-// Strategy entries
+// Strategy entries — split close + open so broker never sees 2 contracts
+//
 // TradingView Alert Message (paste this in alert):
 // {
 //     "ticker": "{{ticker}}",
@@ -62,8 +63,14 @@ barcolor(barsell ? color.red : na)
 //     "interval": "{{interval}}"
 // }
 
+// BUY SIGNAL: close short first (frees margin), then open long
 if buySignal and time_cond
+    if strategy.position_size < 0
+        strategy.close("Short")
     strategy.entry("Long", strategy.long, qty=1)
 
+// SELL SIGNAL: close long first (frees margin), then open short
 if sellSignal and time_cond
+    if strategy.position_size > 0
+        strategy.close("Long")
     strategy.entry("Short", strategy.short, qty=1)
