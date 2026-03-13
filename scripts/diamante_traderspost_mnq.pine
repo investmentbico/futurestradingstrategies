@@ -1,0 +1,68 @@
+// @version=5
+strategy("Bruno Iarussi DIAMANTE CODE - MNQ TradersPost",
+     overlay=true,
+     pyramiding=0,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     process_orders_on_close=true)
+
+// Inputs
+a = input.int(1, title="Key Value (sensitivity)")
+c = input.int(10, title="ATR Period")
+h = input.bool(false, title="Signals from Heikin Ashi Candles")
+
+// BACKTEST RANGE
+fromDay   = input.int(1,    title="From Day",   minval=1, maxval=31)
+fromMonth = input.int(1,    title="From Month", minval=1, maxval=12)
+fromYear  = input.int(2019, title="From Year",  minval=1970)
+toDay     = input.int(1,    title="To Day",     minval=1, maxval=31)
+toMonth   = input.int(1,    title="To Month",   minval=1, maxval=12)
+toYear    = input.int(2100, title="To Year",    minval=1970)
+startDate  = timestamp(fromYear, fromMonth, fromDay, 0, 0)
+finishDate = timestamp(toYear, toMonth, toDay, 0, 0)
+time_cond  = (time >= startDate and time <= finishDate)
+
+// ATR Calculation
+xATR  = ta.atr(c)
+nLoss = a * xATR
+
+// Price Source
+src = h ? request.security(syminfo.tickerid, timeframe.period, close) : close
+
+// Trailing Stop Calculation
+var float xATRTrailingStop = na
+xATRTrailingStop := src > nz(xATRTrailingStop[1], 0) and src[1] > nz(xATRTrailingStop[1], 0) ? math.max(nz(xATRTrailingStop[1]), src - nLoss) :
+     src < nz(xATRTrailingStop[1], 0) and src[1] < nz(xATRTrailingStop[1], 0) ? math.min(nz(xATRTrailingStop[1]), src + nLoss) :
+     src > nz(xATRTrailingStop[1], 0) ? src - nLoss : src + nLoss
+
+ema1  = ta.ema(src, 1)
+above = ta.crossover(ema1, xATRTrailingStop)
+below = ta.crossover(xATRTrailingStop, ema1)
+
+buySignal  = src > xATRTrailingStop and above
+sellSignal = src < xATRTrailingStop and below
+
+barbuy  = src > xATRTrailingStop
+barsell = src < xATRTrailingStop
+
+// Plots
+plotshape(buySignal,  title="Buy",  text="Buy",  style=shape.labelup,   location=location.belowbar, color=color.green, textcolor=color.white, size=size.tiny)
+plotshape(sellSignal, title="Sell", text="Sell", style=shape.labeldown, location=location.abovebar, color=color.red,   textcolor=color.white, size=size.tiny)
+barcolor(barbuy ? color.green : na)
+barcolor(barsell ? color.red : na)
+
+// ============================================================
+// STRATEGY ENTRIES — Close + Reverse for TradersPost webhook
+// ============================================================
+
+// LONG ENTRY: close any short first, then open long
+if buySignal and time_cond
+    if strategy.position_size < 0
+        strategy.close("Short", comment="closeshort")
+    strategy.entry("Long", strategy.long, qty=1, comment="long")
+
+// SHORT ENTRY: close any long first, then open short
+if sellSignal and time_cond
+    if strategy.position_size > 0
+        strategy.close("Long", comment="closelong")
+    strategy.entry("Short", strategy.short, qty=1, comment="short")
